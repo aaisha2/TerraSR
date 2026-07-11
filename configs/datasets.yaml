@@ -1,0 +1,31 @@
+# Stage 1 download targets — Tier 1 primary sources only (true PAN band).
+# See docs/plan §2 for the full sourcing rationale and tier breakdown.
+
+spacenet:
+  bucket: spacenet-dataset          # public, anonymous/unsigned S3 access
+                                     # (verified 2026-07-11: no AWS credentials
+                                     # or RequestPayer header required)
+  band: PAN                         # true panchromatic GeoTIFFs
+  # AOIs chosen for terrain/geographic diversity within SpaceNet's urban focus
+  aois:
+    - AOI_2_Vegas          # dense low-rise urban grid
+    - AOI_3_Paris          # dense historic urban
+    - AOI_4_Shanghai       # dense high-rise urban
+    - AOI_5_Khartoum       # arid/urban-fringe, bare-land-adjacent
+    - AOI_7_Moscow         # urban + surrounding green space
+    - AOI_8_Mumbai         # dense coastal urban
+  out_dir: data/raw/spacenet
+
+maxar:
+  bucket: maxar-opendata            # public, anonymous S3/HTTPS access
+  catalog_url: https://maxar-opendata.s3.amazonaws.com/events/catalog.json
+  asset: pan_analytic               # true panchromatic COG (verified structure:
+                                     # events/<event>/ard/acquisition_collections/
+                                     # <id>_collection.json -> ../<utm>/<quadkey>/<date>/<id>.json
+                                     # -> assets.pan_analytic.href = <id>-pan.tif)
+  # events picked to cover terrain classes SpaceNet's urban focus can't reach:
+  # coastal/flood (water), disaster-affected mountainous regions, etc.
+  events:
+    - Brazil-Flooding-May24     # water / flood terrain
+    - Belize-Wildfires-June24   # forest / burn scar terrain
+  out_dir: data/raw/maxar

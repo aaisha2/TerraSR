@@ -8,8 +8,8 @@ pipeline design, dataset decisions, and paper references.
 
 | Stage | Status |
 |---|---|
-| 0 — config | done (`configs/degradation.yaml`) |
-| 1 — download | not started |
+| 0 — config | done (`configs/degradation.yaml`, `configs/datasets.yaml`) |
+| 1 — download | **working** — SpaceNet (PAN) + Maxar Open Data (pan_analytic), verified against real buckets |
 | 2 — standardize | not started |
 | 3 — patchify | not started |
 | 4 — terrain labeling | not started |
@@ -20,7 +20,33 @@ pipeline design, dataset decisions, and paper references.
 | 9 — evaluation | not started |
 | 10 — web app | not started |
 
-## Stage 5 — degradation pipeline (current)
+## Stage 1 — download
+
+Both sources are public and need no AWS account/credentials — verified
+directly against the live buckets on 2026-07-11:
+
+- **SpaceNet** (`s3://spacenet-dataset/AOIs/<AOI>/PAN/*.TIF`) — anonymous
+  unsigned S3 access works despite older docs describing the bucket as
+  requester-pays; that's not enforced on the current layout.
+- **Maxar Open Data** (STAC catalog at `maxar-opendata.s3.amazonaws.com`) —
+  walks `events/catalog.json` -> event collection -> acquisition
+  collections -> STAC items -> `assets.pan_analytic.href`, plain HTTPS GET.
+
+Both scripts are idempotent (skip files already on disk with a matching
+size) and support `--list-only` to preview without downloading.
+
+```bash
+python data_pipeline/01_download/download_spacenet.py --list-only --aoi AOI_2_Vegas --max-files 5
+python data_pipeline/01_download/download_maxar.py --list-only --event Brazil-Flooding-May24
+
+# real download, capped for a smoke test
+python data_pipeline/01_download/download_maxar.py --event Brazil-Flooding-May24 --max-files 1
+```
+
+Downloaded imagery lands under `data/raw/` (gitignored — this is real
+multi-hundred-MB-per-scene satellite data, never committed).
+
+## Stage 5 — degradation pipeline
 
 Single-order pipeline confirmed with supervisor 2026-07-11: randomized
 blur (Gaussian / anisotropic Gaussian / MTF-elliptical) -> randomized
