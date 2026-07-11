@@ -1,0 +1,4 @@
+# Web app (stage 10) — on top of the repo-root requirements.txt (torch etc.)
+fastapi
+uvicorn[standard]
+python-multipart

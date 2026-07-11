@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TerraSR — Satellite Super-Resolution</title>
+<style>
+  :root{
+    --ink:#12181d; --paper:#eef1ee; --panel:#ffffff; --line:#c9d0c8;
+    --text:#1b2430; --soft:#4a5560; --accent:#1f6b66; --accent2:#2f8f8a;
+    --sand:#c8862c; --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+    --sans:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--text);font-family:var(--sans);line-height:1.5}
+  header{background:var(--ink);color:#eef1ee;padding:20px 28px;display:flex;align-items:baseline;gap:14px}
+  header .logo{font-family:var(--mono);font-weight:700;font-size:20px;letter-spacing:.02em}
+  header .tag{font-size:13px;color:#9fb3ab}
+  header .status{margin-left:auto;font-family:var(--mono);font-size:12px;color:#9fb3ab}
+  header .status b{color:#7fd6cf}
+  main{max-width:1080px;margin:0 auto;padding:28px}
+  .controls{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;background:var(--panel);
+    border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:22px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--soft)}
+  input[type=file]{font-size:14px}
+  select,button{font-size:14px;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:#fff}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;cursor:pointer}
+  button.primary:hover{background:var(--accent2)}
+  button.primary:disabled{opacity:.5;cursor:not-allowed}
+  .drop{border:2px dashed var(--line);border-radius:10px;padding:22px;text-align:center;color:var(--soft);
+    cursor:pointer;transition:border-color .15s;flex:1;min-width:220px}
+  .drop.hover{border-color:var(--accent2);color:var(--accent)}
+  .drop.has-file{border-style:solid;border-color:var(--accent2);color:var(--text)}
+  .result{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;display:none}
+  .result.show{display:block}
+  .meta{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+  .chip{font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 11px;color:var(--soft)}
+  .chip b{color:var(--accent)}
+  .compare{position:relative;max-width:512px;margin:0 auto;user-select:none;touch-action:none}
+  .compare img{display:block;width:100%;image-rendering:pixelated;border-radius:8px}
+  .compare .after-wrap{position:absolute;inset:0;overflow:hidden;width:50%}
+  .compare .after-wrap img{width:auto;height:100%;max-width:none}
+  .compare .handle{position:absolute;top:0;bottom:0;left:50%;width:3px;background:var(--sand);cursor:ew-resize;transform:translateX(-50%)}
+  .compare .handle::after{content:"◄ ►";position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:var(--sand);color:#fff;font-size:11px;padding:3px 7px;border-radius:999px;white-space:nowrap;font-family:var(--mono)}
+  .lbl{position:absolute;top:10px;font-family:var(--mono);font-size:11px;background:rgba(18,24,29,.75);color:#fff;padding:3px 8px;border-radius:6px}
+  .lbl.l{left:10px} .lbl.r{right:10px}
+  .hint{font-size:13px;color:var(--soft);text-align:center;margin-top:12px}
+  .err{color:#b5563a;font-size:14px;margin-top:12px}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">TerraSR</span>
+  <span class="tag">multi-terrain satellite super-resolution · 2×</span>
+  <span class="status" id="status">connecting…</span>
+</header>
+<main>
+  <div class="controls">
+    <div class="drop" id="drop">
+      <div id="dropText">Drop a satellite image here, or click to choose</div>
+      <input type="file" id="file" accept="image/*" style="display:none">
+    </div>
+    <div class="field">
+      <label for="terrain">Terrain</label>
+      <select id="terrain">
+        <option value="auto">Auto / unknown</option>
+      </select>
+    </div>
+    <button class="primary" id="run" disabled>Enhance</button>
+  </div>
+
+  <div class="result" id="result">
+    <div class="meta" id="meta"></div>
+    <div class="compare" id="compare">
+      <img id="beforeImg" alt="before">
+      <div class="after-wrap" id="afterWrap"><img id="afterImg" alt="after"></div>
+      <div class="handle" id="handle"></div>
+      <span class="lbl l">LR input</span>
+      <span class="lbl r">SR output</span>
+    </div>
+    <div class="hint">Drag the divider to compare the low-resolution input with the super-resolved output.</div>
+    <div class="err" id="err"></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let fileData = null;
+
+// --- health / terrain list ---
+fetch('/api/health').then(r=>r.json()).then(h=>{
+  const fb = h.using_fallback ? ' (bicubic fallback — no trained model)' : '';
+  $('status').innerHTML = `model <b>${h.model}</b> · ${h.device}${fb}`;
+  const sel = $('terrain');
+  h.terrains.forEach(t=>{ const o=document.createElement('option'); o.value=t; o.textContent=t; sel.appendChild(o); });
+  if(!h.terrain_conditioned){ sel.disabled=true; sel.title='loaded model is not terrain-conditioned'; }
+}).catch(()=>{ $('status').textContent='backend offline'; });
+
+// --- file selection (click + drag) ---
+const drop=$('drop'), fileInput=$('file');
+drop.onclick=()=>fileInput.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('hover');};
+drop.ondragleave=()=>drop.classList.remove('hover');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('hover');if(e.dataTransfer.files[0])setFile(e.dataTransfer.files[0]);};
+fileInput.onchange=()=>{ if(fileInput.files[0]) setFile(fileInput.files[0]); };
+function setFile(f){ fileData=f; drop.classList.add('has-file'); $('dropText').textContent='📷 '+f.name; $('run').disabled=false; }
+
+// --- run inference ---
+$('run').onclick=async()=>{
+  if(!fileData) return;
+  const btn=$('run'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span> Enhancing…';
+  $('err').textContent='';
+  const fd=new FormData(); fd.append('image',fileData); fd.append('terrain',$('terrain').value);
+  try{
+    const r=await fetch('/api/infer',{method:'POST',body:fd});
+    const d=await r.json();
+    if(d.error){ $('err').textContent=d.error; }
+    else renderResult(d);
+  }catch(e){ $('err').textContent='request failed: '+e; }
+  btn.disabled=false; btn.textContent='Enhance';
+};
+
+function renderResult(d){
+  $('beforeImg').src=d.before_url;
+  $('afterImg').src=d.after_url;
+  const meta=$('meta'); meta.innerHTML='';
+  const chips=[
+    ['model', d.model],
+    ['terrain', d.terrain_used],
+    ['input', d.input_size.join('×')],
+    ['output', d.output_size.join('×')],
+  ];
+  if(d.using_fallback) chips.push(['note','bicubic fallback']);
+  chips.forEach(([k,v])=>{ const c=document.createElement('span'); c.className='chip'; c.innerHTML=`${k} <b>${v}</b>`; meta.appendChild(c); });
+  $('result').classList.add('show');
+  setDivider(50);
+}
+
+// --- comparison slider ---
+const compare=$('compare');
+function setDivider(pct){
+  pct=Math.max(0,Math.min(100,pct));
+  $('afterWrap').style.width=pct+'%';
+  $('handle').style.left=pct+'%';
+  const w=compare.querySelector('img').clientWidth;
+  $('afterImg').style.width=w+'px';
+}
+function dragTo(clientX){
+  const rect=compare.getBoundingClientRect();
+  setDivider(((clientX-rect.left)/rect.width)*100);
+}
+let dragging=false;
+compare.addEventListener('pointerdown',e=>{dragging=true;dragTo(e.clientX);});
+window.addEventListener('pointermove',e=>{if(dragging)dragTo(e.clientX);});
+window.addEventListener('pointerup',()=>dragging=false);
+window.addEventListener('resize',()=>setDivider(parseFloat($('handle').style.left)||50));
+</script>
+</body>
+</html>

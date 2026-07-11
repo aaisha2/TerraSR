@@ -36,7 +36,7 @@ repo and builds `data/` locally.
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | **working** — manifest-driven Dataset + all 3 models + model-agnostic trainer, smoke-tested end-to-end on CPU |
 | 8 — TerraSR model | **working** — SwinIR + terrain embedding (FiLM) + terrain-aware loss, smoke-tested end-to-end on CPU |
 | 9 — evaluation | **working** — overall + per-terrain PSNR/SSIM (tested); downstream-detection harness (proxy metric, documented) |
-| 10 — web app | not started |
+| 10 — web app | **working** — FastAPI backend (loads a trained checkpoint) + build-free browser UI (upload, terrain select, before/after slider), verified end-to-end |
 
 ## Stage 1 — download
 
@@ -152,6 +152,26 @@ name match, e.g. tagging a whole mountainous Maxar event), not from the
 pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
 DEM/SRTM — already scoped as a reserve source in the build plan) would be
 the correct long-term fix but isn't implemented yet.
+
+## Stage 10 — web app
+
+A FastAPI backend (`webapp/backend/app.py`) loads a trained checkpoint and
+super-resolves an uploaded image; a self-contained browser UI
+(`webapp/frontend/index.html`, no build step) handles upload, terrain
+selection, and a draggable before/after comparison. Because TerraSR is
+terrain-conditioned, the UI's terrain dropdown feeds the terrain embedding.
+
+```bash
+pip install -r webapp/requirements.txt
+python webapp/backend/app.py            # http://127.0.0.1:8000
+```
+
+Verified end-to-end: `/api/health` reports the loaded model, `/api/infer`
+returns a real 128²→256² terrain-conditioned result, and the UI renders the
+comparison slider + metadata. If no checkpoint exists yet it falls back to
+bicubic (clearly labelled) so it's demonstrable before the RESOLVE run. See
+[webapp/README.md](webapp/README.md). Automatic terrain classification from the
+LR image is noted there as future work.
 
 ## Stage 9 — evaluation
 
