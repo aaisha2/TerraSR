@@ -1,0 +1,36 @@
+# Stage 8 training config — the terrain-conditioned model (terrain embedding +
+# terrain-aware loss). Same data path as the baselines; the differences are
+# the model (terrasr) and the loss (terrain_aware).
+
+model:
+  name: terrasr
+  scale_factor: 2
+  num_channels: 1
+  embed_dim: 60
+  depths: [6, 6, 6, 6]
+  num_heads: [6, 6, 6, 6]
+  window_size: 8
+  num_terrains: 7
+  embed_dim_terrain: 32
+
+data:
+  train_csv: data/dataset/train.csv
+  val_csv: data/dataset/val.csv
+  terrain_config: configs/terrain_classes.yaml
+  normalize: per_patch_max
+  augment: true
+
+loss:
+  config: configs/terrain_aware_loss.yaml
+  # set true to zero the perceptual term (skips the one-time VGG download) —
+  # useful for a quick offline run; leave false for the real training on RESOLVE
+  disable_perceptual: false
+
+train:
+  epochs: 100
+  batch_size: 16
+  lr: 0.0002
+  num_workers: 4
+  seed: 42
+  val_every: 1
+  out_dir: checkpoints/terrasr

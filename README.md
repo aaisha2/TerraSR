@@ -16,7 +16,7 @@ pipeline design, dataset decisions, and paper references.
 | 5 — degrade (LR/HR pairs) | **working** — 16-bit GeoTIFF output (lossless HR copy + georeferenced LR), manifest-drivable; legacy 8-bit PNG path retained for smoke tests |
 | 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | **working** — manifest-driven Dataset + all 3 models + model-agnostic trainer, smoke-tested end-to-end on CPU |
-| 8 — TerraSR model | not started |
+| 8 — TerraSR model | **working** — SwinIR + terrain embedding (FiLM) + terrain-aware loss, smoke-tested end-to-end on CPU |
 | 9 — evaluation | not started |
 | 10 — web app | not started |
 
@@ -129,6 +129,40 @@ name match, e.g. tagging a whole mountainous Maxar event), not from the
 pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
 DEM/SRTM — already scoped as a reserve source in the build plan) would be
 the correct long-term fix but isn't implemented yet.
+
+## Stage 8 — TerraSR model (the novel contribution)
+
+Combines the two ideas from the proposal into one model, not seven:
+
+- **Terrain embedding + FiLM** (`models/terrasr_swinir.py`): a learned
+  embedding table holds one vector per terrain; each RSTB has its own
+  projection from that embedding to per-channel `(gamma, beta)` that modulate
+  the block's conv features (`f' = (1 + gamma) * f + beta`). The FiLM
+  generator is **zero-initialised**, so at the start of training terrain
+  conditioning is exactly the identity — it can only help, never disrupt the
+  base network. Verified: at init, urban-vs-no-terrain output difference is
+  exactly 0; after the FiLM weights move, urban vs forest outputs genuinely
+  diverge.
+- **Terrain-aware loss** (`models/losses/`): a shared L1 + SSIM base plus
+  per-terrain edge and perceptual terms (`configs/terrain_aware_loss.yaml`) —
+  urban up-weights the edge/gradient term, forest up-weights the
+  perceptual/texture term, water/desert keep both low to avoid ringing. Each
+  sample in a mixed-terrain batch is weighted by its own terrain. The VGG
+  perceptual term is built lazily (only if some terrain asks for it), so runs
+  that disable it never need the 528 MB VGG download.
+
+```bash
+python training/train_terrasr.py --config configs/train_terrasr.yaml
+# quick offline run (no VGG download):
+python training/train_terrasr.py --config configs/train_terrasr.yaml \
+    --override train.epochs=5 loss.disable_perceptual=true
+```
+
+`train_terrasr.py` differs from the baseline trainer in exactly two places —
+the model receives the per-sample terrain index (`model(lr, terrain_idx)`)
+and the loss is the terrain-aware composite — so results stay directly
+comparable to the baselines under matched conditions. Smoke-tested
+end-to-end on CPU (perceptual disabled): trains, validates, checkpoints.
 
 ## Stage 7 — baselines (SRCNN / SRGAN / SwinIR)
 

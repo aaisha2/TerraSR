@@ -11,6 +11,8 @@ _REGISTRY = {
     "srgan": "models.srgan_baseline",      # SRResNet generator (+ optional GAN)
     "srresnet": "models.srgan_baseline",
     "swinir": "models.swinir_baseline",
+    "terrasr": "models.terrasr_swinir",    # SwinIR + terrain embedding (stage 8)
+    "terrasr_swinir": "models.terrasr_swinir",
 }
 
 
