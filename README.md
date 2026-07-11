@@ -17,7 +17,7 @@ pipeline design, dataset decisions, and paper references.
 | 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | **working** — manifest-driven Dataset + all 3 models + model-agnostic trainer, smoke-tested end-to-end on CPU |
 | 8 — TerraSR model | **working** — SwinIR + terrain embedding (FiLM) + terrain-aware loss, smoke-tested end-to-end on CPU |
-| 9 — evaluation | not started |
+| 9 — evaluation | **working** — overall + per-terrain PSNR/SSIM (tested); downstream-detection harness (proxy metric, documented) |
 | 10 — web app | not started |
 
 ## Stage 1 — download
@@ -129,6 +129,39 @@ name match, e.g. tagging a whole mountainous Maxar event), not from the
 pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
 DEM/SRTM — already scoped as a reserve source in the build plan) would be
 the correct long-term fix but isn't implemented yet.
+
+## Stage 9 — evaluation
+
+```bash
+# 9a: overall PSNR/SSIM for any checkpoints + the bicubic floor
+python evaluation/eval_psnr_ssim.py --test-csv data/dataset/test.csv --with-bicubic \
+    --checkpoints checkpoints/swinir_baseline/best.pth checkpoints/terrasr/best.pth
+
+# 9b: per-terrain PSNR/SSIM breakdown (the key deliverable) + per-terrain delta
+python evaluation/eval_per_terrain.py --test-csv data/dataset/test.csv \
+    --checkpoints checkpoints/swinir_baseline/best.pth checkpoints/terrasr/best.pth
+
+# 9c: downstream-detection harness (proxy metric — see below)
+python evaluation/eval_downstream_detection.py --test-csv data/dataset/test.csv \
+    --checkpoint checkpoints/terrasr/best.pth
+```
+
+All three load any checkpoint (baseline or terrain-conditioned) and dispatch
+the forward call correctly (`model(lr)` vs `model(lr, terrain_idx)`) from the
+`model_name` saved in the checkpoint. Metrics use `skimage.metrics` (the
+community-standard implementations) so numbers are comparable to the SR
+literature. `eval_per_terrain.py` prints a per-terrain delta when exactly two
+checkpoints are compared — this is where the terrain-aware gain shows up
+terrain by terrain, not just in the average.
+
+**Downstream detection is a documented proxy, not the final metric.** The
+rigorous version needs ground-truth object boxes (e.g. SpaceNet building
+footprints) and a detector fine-tuned on them, then reports mAP on LR vs SR vs
+HR. That GT + fine-tuned detector isn't wired up yet, so the harness reports a
+runnable stand-in: using a pretrained COCO detector as a fixed reference, how
+well each SR output reproduces the detections the detector makes on the true
+HR image (detection-consistency). Swap in the SpaceNet-fine-tuned detector and
+GT boxes to get the final mAP number.
 
 ## Stage 8 — TerraSR model (the novel contribution)
 
