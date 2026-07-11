@@ -14,7 +14,7 @@ pipeline design, dataset decisions, and paper references.
 | 3 — patchify | **working** — fixed-grid patch extraction + nodata/blank/saturation filtering, tested on a real Maxar crop straddling a nodata boundary |
 | 4 — terrain labeling | **working** — ESA WorldCover zonal stats + dominant-terrain assignment, tested end-to-end on real patches from the stage 3 output |
 | 5 — degrade (LR/HR pairs) | **working**, validated on synthetic test patches only |
-| 6 — package + split | not started |
+| 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | not started |
 | 8 — TerraSR model | not started |
 | 9 — evaluation | not started |
@@ -129,6 +129,49 @@ name match, e.g. tagging a whole mountainous Maxar event), not from the
 pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
 DEM/SRTM — already scoped as a reserve source in the build plan) would be
 the correct long-term fix but isn't implemented yet.
+
+## Stage 6 — package + split
+
+```bash
+# 6a: join stage 4 (terrain labels) + stage 5 (LR/HR pairs) into one manifest
+python data_pipeline/06_package/build_manifest.py \
+    --labeled out/patches/patch_manifest_labeled.json \
+    --degradation out/pairs/degradation_manifest.json \
+    --out-dir out/dataset
+
+# 6b: geographic-block train/val/test split (whole scenes, never per-patch)
+python data_pipeline/06_package/split_train_val_test.py \
+    --manifest out/dataset/dataset_manifest.parquet
+
+# 6c: sanity report — per-terrain counts, floor check, leakage guard
+python data_pipeline/06_package/dataset_stats.py \
+    --manifest out/dataset/dataset_manifest_split.parquet
+```
+
+The unified manifest (`dataset_manifest_split.parquet`/`.csv`, plus
+`train.csv`/`val.csv`/`test.csv`) is the single source of truth for stages
+7–9: one row per patch with `hr_path`, `lr_path`, `terrain_label`,
+`terrain_purity`, `pseudo_pan`, `source_scene`, and `split`.
+
+Split is by **geographic block** — the whole source scene is the atomic
+unit, never divided across splits, so near-duplicate neighbouring patches
+can't leak train content into val/test. Assignment uses a normalized-deficit
+greedy that converges to the configured 80/10/10 with many scenes and still
+spreads scenes across splits when there are few. `dataset_stats.py` runs a
+leakage guard confirming no scene spans multiple splits, and flags any
+terrain below the per-class floor (surfacing the water/mountain scarcity
+risk before training).
+
+Tested end-to-end on 3 real scenes cropped from the downloaded Maxar tile,
+run through stages 2→3→4→5: 48 patches joined cleanly, each scene landed in
+a distinct split with zero leakage, and the stats report correctly flagged
+Water/Mountain as absent.
+
+**Format note (applies to stage 5 too):** stage 5 currently emits 8-bit PNG
+LR/HR pairs (a carry-over from its synthetic smoke test). Before the real
+training run it should be re-run in a mode that preserves the 16-bit GeoTIFF
+depth of the PAN patches. The stage 6 manifest schema is unaffected (it only
+stores paths), so no stage 6 changes are needed when that upgrade lands.
 
 ## Stage 5 — degradation pipeline
 
