@@ -1,0 +1,24 @@
+# Stage 8 terrain-aware loss weights (docs/plan §8). A shared L1 + SSIM base,
+# plus per-terrain edge and perceptual terms so each terrain emphasises the
+# image characteristics that matter most:
+#   urban      -> strong edge/gradient term (sharp man-made structure)
+#   forest     -> strong perceptual/texture term
+#   water/desert -> low edge weight to avoid ringing on smooth regions
+# All weights are edits here, never in code.
+
+base:
+  l1: 1.0
+  ssim: 0.1          # applied as (1 - SSIM)
+
+# extra per-terrain weights on the edge and perceptual terms
+per_terrain:
+  Urban:               {edge: 0.20, perceptual: 0.00}
+  Agriculture:         {edge: 0.10, perceptual: 0.05}
+  Forest:              {edge: 0.00, perceptual: 0.10}
+  Water:               {edge: 0.00, perceptual: 0.00}
+  Mountain:            {edge: 0.10, perceptual: 0.05}
+  "Bare Land/Desert":  {edge: 0.00, perceptual: 0.00}
+  "Grassland/Wetland": {edge: 0.05, perceptual: 0.05}
+
+# used for patches with no/unknown terrain label (terrain_idx < 0)
+default: {edge: 0.05, perceptual: 0.05}

@@ -1,0 +1,34 @@
+# UC Merced test — terrain-conditioned TerraSR training. Small + few epochs
+# for a CPU end-to-end run; scale up / GPU for real.
+model:
+  name: terrasr
+  scale_factor: 2
+  num_channels: 1
+  embed_dim: 36
+  depths: [2, 2]
+  num_heads: [3, 3]
+  window_size: 8
+  num_terrains: 7
+  embed_dim_terrain: 32
+
+data:
+  train_csv: test_pipeline_ucmerced/data/dataset/train.csv
+  val_csv: test_pipeline_ucmerced/data/dataset/val.csv
+  terrain_config: test_pipeline_ucmerced/configs/ucmerced_terrain.yaml
+  normalize: per_patch_max
+  augment: true
+
+loss:
+  config: test_pipeline_ucmerced/configs/terrain_aware_loss.yaml
+  # perceptual term needs the VGG download; off by default for a quick local
+  # test, on for a real run
+  disable_perceptual: true
+
+train:
+  epochs: 5
+  batch_size: 16
+  lr: 0.0002
+  num_workers: 0
+  seed: 42
+  val_every: 1
+  out_dir: test_pipeline_ucmerced/checkpoints/terrasr

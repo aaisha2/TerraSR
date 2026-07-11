@@ -1,0 +1,34 @@
+# UC Merced test — baseline training. Small model + few epochs so the whole
+# pipeline finishes on CPU in minutes. Scale up (embed_dim 60, depths
+# [6,6,6,6], more epochs) or move to GPU for a real run.
+model:
+  name: swinir            # srcnn | srgan | swinir
+  scale_factor: 2
+  num_channels: 1
+  embed_dim: 36
+  depths: [2, 2]
+  num_heads: [3, 3]
+  window_size: 8
+  num_features: 48        # srgan
+  num_blocks: 6           # srgan
+
+data:
+  train_csv: test_pipeline_ucmerced/data/dataset/train.csv
+  val_csv: test_pipeline_ucmerced/data/dataset/val.csv
+  terrain_config: test_pipeline_ucmerced/configs/ucmerced_terrain.yaml
+  normalize: per_patch_max
+  augment: true
+
+train:
+  epochs: 5
+  batch_size: 16
+  lr: 0.0002
+  loss: l1
+  num_workers: 0
+  seed: 42
+  val_every: 1
+  out_dir: test_pipeline_ucmerced/checkpoints/swinir
+
+gan:
+  enabled: false
+  adv_weight: 0.001

@@ -1,0 +1,46 @@
+# UC Merced test harness — terrain config.
+#
+# The terrain labeling for the RESOLVE pipeline comes from ESA WorldCover
+# (needs georeferenced imagery). UC Merced tiles aren't georeferenced but they
+# ARE class-labelled by folder name, so here the terrain label is derived from
+# the UC Merced land-use class instead — a clean stand-in that still exercises
+# the terrain-conditioned model and per-terrain evaluation end to end.
+
+# Canonical terrain -> index. MUST match configs/terrain_classes.yaml in the
+# main repo (the terrain embedding rows are tied to these indices). Copied here
+# so the test harness is self-contained and isolated.
+terrain_index:
+  Urban: 0
+  Agriculture: 1
+  Forest: 2
+  Water: 3
+  Mountain: 4
+  "Bare Land/Desert": 5
+  "Grassland/Wetland": 6
+
+# UC Merced's 21 land-use classes -> the project's 7 terrain categories.
+# (Mountain and Bare Land/Desert have no UC Merced class, so they won't appear
+#  — the same kind of terrain-coverage gap the real dataset has, which is fine
+#  for a pipeline test.)
+ucmerced_class_to_terrain:
+  agricultural:      Agriculture
+  forest:            Forest
+  river:             Water
+  beach:             Water
+  harbor:            Water
+  chaparral:         "Grassland/Wetland"
+  golfcourse:        "Grassland/Wetland"
+  airplane:          Urban
+  baseballdiamond:   Urban
+  buildings:         Urban
+  denseresidential:  Urban
+  mediumresidential: Urban
+  sparseresidential: Urban
+  mobilehomepark:    Urban
+  freeway:           Urban
+  overpass:          Urban
+  intersection:      Urban
+  parkinglot:        Urban
+  runway:            Urban
+  storagetanks:      Urban
+  tenniscourt:       Urban

@@ -1,0 +1,21 @@
+# Stage 6 packaging + split config — see docs/plan §3 (sizing) and §6.
+
+split:
+  # Geographic-BLOCK split: whole source scenes are assigned to one split,
+  # never divided across sets. Adjacent patches from the same scene are
+  # near-duplicates, so a random per-patch split would leak train content
+  # into val/test and inflate PSNR/SSIM. (docs/plan §3)
+  ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  group_by: source_scene   # the geographic block unit
+  seed: 42                  # reproducible scene->split assignment
+
+stats:
+  # per-class patch floor from the sizing plan — dataset_stats.py flags any
+  # terrain below this so the water/mountain scarcity risk (docs/plan §3)
+  # surfaces before training, not after
+  per_class_floor: 3000
+  # terrains expected to be hardest to reach the floor (informational)
+  scarcity_watch: [Water, Mountain]
