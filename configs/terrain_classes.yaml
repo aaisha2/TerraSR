@@ -1,0 +1,52 @@
+# Stage 4 terrain labeling — maps ESA WorldCover's 11 land-cover classes
+# down to the project's 7 terrain categories (confirmed with supervisor,
+# see docs/plan §1). Automated dominant-label assignment only, no manual
+# annotation.
+
+worldcover_source:
+  # ESA WorldCover v200 (2021), public COG tiles on S3. Path-style URL --
+  # the virtual-hosted-style form (bucket-name.s3....amazonaws.com) was
+  # unreliable from the dev machine (connection resets). Tiles are cached
+  # locally on first use (one-time ~110MB/tile download) and read with
+  # plain rasterio.open() rather than GDAL's /vsicurl/ streaming, which hit
+  # the same connection resets independently of URL style when tested here
+  # 2026-07-11 -- caching sidesteps that instability rather than depending
+  # on it being fixed.
+  base_url: "https://s3.eu-central-1.amazonaws.com/esa-worldcover/v200/2021/map"
+  filename_template: "ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
+  tile_grid_deg: 3
+  cache_dir: "data/cache/worldcover"
+
+# WorldCover class codes -> project terrain category.
+class_to_terrain:
+  10: Forest                    # Tree cover
+  20: "Bare Land/Desert"         # Shrubland -- approximation, see note below
+  30: "Grassland/Wetland"        # Grassland
+  40: Agriculture                # Cropland
+  50: Urban                      # Built-up
+  60: "Bare Land/Desert"         # Bare / sparse vegetation
+  70: "Bare Land/Desert"         # Snow and ice -- approximation, see note below
+  80: Water                      # Permanent water bodies
+  90: "Grassland/Wetland"        # Herbaceous wetland
+  95: Water                      # Mangroves
+  100: "Grassland/Wetland"       # Moss and lichen
+
+# Known gap (flag for supervisor, same style as the PAN/degradation
+# questions already resolved): ESA WorldCover is a land-cover product, not
+# a landform product, so it has no "Mountain" class -- Shrubland/Bare/Snow
+# pixels occur on mountains and on flat drylands alike, and mapping them to
+# Mountain by default would mislabel real deserts. Mountain is therefore
+# NOT derived per-pixel here. Instead it's assigned only via an explicit
+# scene-level override (below), driven by which Maxar/SpaceNet event or AOI
+# a patch's source scene came from -- e.g. a Maxar mountainous-disaster
+# event. A DEM-slope-based per-pixel refinement (Copernicus DEM/SRTM,
+# already scoped as a reserve/ablation source in the build plan) is the
+# correct long-term fix but is not implemented yet.
+scene_terrain_overrides:
+  # source_scene substring (case-insensitive) -> forced terrain label
+  # example, once a mountainous Maxar event is added to configs/datasets.yaml:
+  # "turkey-earthquake": Mountain
+
+purity:
+  min_purity_to_keep_label: 0.0   # 0 = never discard, just record purity;
+                                    # raise this later for a purity-filtered ablation

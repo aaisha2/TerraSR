@@ -12,7 +12,7 @@ pipeline design, dataset decisions, and paper references.
 | 1 — download | **working** — SpaceNet (PAN) + Maxar Open Data (pan_analytic), verified against real buckets |
 | 2 — standardize | **working** — PAN/pseudo-PAN extraction + CRS/dtype normalization, tested on a real Maxar crop and a synthetic geographic RGB fixture |
 | 3 — patchify | **working** — fixed-grid patch extraction + nodata/blank/saturation filtering, tested on a real Maxar crop straddling a nodata boundary |
-| 4 — terrain labeling | not started |
+| 4 — terrain labeling | **working** — ESA WorldCover zonal stats + dominant-terrain assignment, tested end-to-end on real patches from the stage 3 output |
 | 5 — degrade (LR/HR pairs) | **working**, validated on synthetic test patches only |
 | 6 — package + split | not started |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | not started |
@@ -95,6 +95,40 @@ field/path texture).
 Each patch keeps its source scene's tags (`pseudo_pan`, `orig_crs`, etc.)
 plus `source_scene`/`row`/`col`/`tile_id`, which stage 6's geographic
 split depends on to keep all patches from one scene in the same split.
+
+## Stage 4 — terrain labeling
+
+```bash
+# 4a: per-patch ESA WorldCover class histogram (configs/terrain_classes.yaml)
+python data_pipeline/04_labeling/worldcover_zonal_stats.py \
+    --manifest out/patches/patch_manifest_filtered.json --only-kept
+
+# 4b: dominant terrain label + purity from the histogram
+python data_pipeline/04_labeling/assign_dominant_terrain.py \
+    --manifest out/patches/patch_manifest_zonal.json
+```
+
+WorldCover tiles are cached locally on first use rather than streamed via
+GDAL's `/vsicurl/` — that streaming path hit intermittent connection resets
+against the bucket when tested here (independent of URL style), while plain
+`requests` downloads were reliable, so tiles are fetched whole once per
+3°×3° cell and read locally afterward (many patches from one AOI share a
+tile, so this is a one-time cost, not per-patch).
+
+Tested end-to-end on the real kept patches from stage 3: the WorldCover
+histogram for one patch (Forest, purity 0.85) was `{Tree cover: 165,
+Grassland: 30}` — cross-checked against the patch's own visual preview
+(field/forest/path texture), which matches.
+
+**Known gap, flagged rather than silently patched over:** ESA WorldCover
+is a land-cover product with no landform classes, so "Mountain" cannot be
+derived from it per-pixel — Shrubland/Bare/Snow occur on mountains and on
+flat drylands alike. Mountain is therefore only assigned via
+`scene_terrain_overrides` in `configs/terrain_classes.yaml` (a source-scene
+name match, e.g. tagging a whole mountainous Maxar event), not from the
+pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
+DEM/SRTM — already scoped as a reserve source in the build plan) would be
+the correct long-term fix but isn't implemented yet.
 
 ## Stage 5 — degradation pipeline
 
