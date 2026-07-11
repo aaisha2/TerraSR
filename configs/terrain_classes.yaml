@@ -50,3 +50,16 @@ scene_terrain_overrides:
 purity:
   min_purity_to_keep_label: 0.0   # 0 = never discard, just record purity;
                                     # raise this later for a purity-filtered ablation
+
+# Canonical terrain -> integer index. Fixed ordering: the dataset maps
+# terrain_label strings to these indices, and stage 8's terrain embedding
+# table is indexed by exactly this (num_terrains = 7). Do not reorder once
+# models are trained -- the embedding rows are tied to these indices.
+terrain_index:
+  Urban: 0
+  Agriculture: 1
+  Forest: 2
+  Water: 3
+  Mountain: 4
+  "Bare Land/Desert": 5
+  "Grassland/Wetland": 6

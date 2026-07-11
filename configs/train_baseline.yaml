@@ -1,0 +1,38 @@
+# Stage 7 baseline training config. One file per experiment; select the model
+# with `model.name` (srcnn | srgan | swinir). train_baseline.py is otherwise
+# model-agnostic — the same dataset/manifest feeds all three (docs/plan §7).
+
+model:
+  name: swinir            # srcnn | srgan | swinir
+  scale_factor: 2
+  num_channels: 1         # PAN
+  # model-specific knobs (ignored by models that don't use them):
+  embed_dim: 60
+  depths: [6, 6, 6, 6]
+  num_heads: [6, 6, 6, 6]
+  window_size: 8
+  num_features: 64        # srgan
+  num_blocks: 16          # srgan
+
+data:
+  # per-split CSVs from stage 6 (split_train_val_test.py)
+  train_csv: data/dataset/train.csv
+  val_csv: data/dataset/val.csv
+  terrain_config: configs/terrain_classes.yaml
+  normalize: per_patch_max
+  augment: true
+
+train:
+  epochs: 100
+  batch_size: 16
+  lr: 0.0002
+  loss: l1               # l1 | l2
+  num_workers: 4
+  seed: 42
+  val_every: 1           # epochs
+  out_dir: checkpoints/swinir_baseline
+
+# SRGAN-only: when model.name == srgan, also train adversarially if true
+gan:
+  enabled: false
+  adv_weight: 0.001

@@ -15,7 +15,7 @@ pipeline design, dataset decisions, and paper references.
 | 4 — terrain labeling | **working** — ESA WorldCover zonal stats + dominant-terrain assignment, tested end-to-end on real patches from the stage 3 output |
 | 5 — degrade (LR/HR pairs) | **working** — 16-bit GeoTIFF output (lossless HR copy + georeferenced LR), manifest-drivable; legacy 8-bit PNG path retained for smoke tests |
 | 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
-| 7 — baselines (SRCNN/SRGAN/SwinIR) | not started |
+| 7 — baselines (SRCNN/SRGAN/SwinIR) | **working** — manifest-driven Dataset + all 3 models + model-agnostic trainer, smoke-tested end-to-end on CPU |
 | 8 — TerraSR model | not started |
 | 9 — evaluation | not started |
 | 10 — web app | not started |
@@ -129,6 +129,36 @@ name match, e.g. tagging a whole mountainous Maxar event), not from the
 pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
 DEM/SRTM — already scoped as a reserve source in the build plan) would be
 the correct long-term fix but isn't implemented yet.
+
+## Stage 7 — baselines (SRCNN / SRGAN / SwinIR)
+
+The stage 6 manifest feeds a single manifest-driven PyTorch `Dataset`
+(`terrasr_data/dataset.py`) that yields `(lr, hr, terrain_idx, meta)` for
+every model — the baselines ignore `terrain_idx`, stage 8 uses it, so the
+data path never changes between experiments. All three models are
+single-channel (PAN) and upscale 2×:
+
+- `models/srcnn_baseline.py` — SRCNN (CNN baseline)
+- `models/srgan_baseline.py` — SRResNet generator + discriminator (GAN baseline)
+- `models/swinir_baseline.py` — SwinIR, written in-house so stage 8 can inject
+  FiLM terrain conditioning into the RSTB blocks
+
+`training/train_baseline.py` is model-agnostic — the model is chosen by
+config, so benchmarking three baselines under identical conditions is three
+config files (or `--override model.name=...`).
+
+```bash
+python training/train_baseline.py --config configs/train_baseline.yaml
+# swap model / tweak without editing the file:
+python training/train_baseline.py --config configs/train_baseline.yaml \
+    --override model.name=srcnn train.epochs=5
+```
+
+Smoke-tested end-to-end on CPU on the real GeoTIFF dataset: all three models
+train (loss decreasing), validate (per-epoch PSNR), and save/reload
+checkpoints. **The PSNR numbers from those runs are meaningless** (16 patches,
+2–3 epochs) — they only prove the machinery; real training runs on the
+RESOLVE GPU with the full dataset.
 
 ## Stage 6 — package + split
 
