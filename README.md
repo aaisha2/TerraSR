@@ -13,7 +13,7 @@ pipeline design, dataset decisions, and paper references.
 | 2 — standardize | **working** — PAN/pseudo-PAN extraction + CRS/dtype normalization, tested on a real Maxar crop and a synthetic geographic RGB fixture |
 | 3 — patchify | **working** — fixed-grid patch extraction + nodata/blank/saturation filtering, tested on a real Maxar crop straddling a nodata boundary |
 | 4 — terrain labeling | **working** — ESA WorldCover zonal stats + dominant-terrain assignment, tested end-to-end on real patches from the stage 3 output |
-| 5 — degrade (LR/HR pairs) | **working**, validated on synthetic test patches only |
+| 5 — degrade (LR/HR pairs) | **working** — 16-bit GeoTIFF output (lossless HR copy + georeferenced LR), manifest-drivable; legacy 8-bit PNG path retained for smoke tests |
 | 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | not started |
 | 8 — TerraSR model | not started |
@@ -163,15 +163,9 @@ terrain below the per-class floor (surfacing the water/mountain scarcity
 risk before training).
 
 Tested end-to-end on 3 real scenes cropped from the downloaded Maxar tile,
-run through stages 2→3→4→5: 48 patches joined cleanly, each scene landed in
-a distinct split with zero leakage, and the stats report correctly flagged
-Water/Mountain as absent.
-
-**Format note (applies to stage 5 too):** stage 5 currently emits 8-bit PNG
-LR/HR pairs (a carry-over from its synthetic smoke test). Before the real
-training run it should be re-run in a mode that preserves the 16-bit GeoTIFF
-depth of the PAN patches. The stage 6 manifest schema is unaffected (it only
-stores paths), so no stage 6 changes are needed when that upgrade lands.
+run through stages 2→3→4→5 (GeoTIFF output): 48 patches joined cleanly, each
+scene landed in a distinct split with zero leakage, and the stats report
+correctly flagged Water/Mountain as absent.
 
 ## Stage 5 — degradation pipeline
 
@@ -181,10 +175,28 @@ downsample (nearest/area/bicubic) -> Poisson+Gaussian noise -> JPEG
 recompression (quality 70-95). All parameters live in
 `configs/degradation.yaml`.
 
+**Output format** (`configs/degradation.yaml` -> `output.format`):
+
+- `geotiff` (default, real pipeline) — preserves the 16-bit depth and
+  georeferencing of the PAN patches. HR is written back as a **lossless
+  copy** of the ground-truth patch (verified array-equal, same dtype/CRS/
+  transform); LR is written as a 16-bit GeoTIFF with a geotransform scaled
+  by the SR factor (verified: exactly 2× pixel size, same origin/CRS). For
+  the degradation math the HR is normalized to `[0,1]` (per-patch max by
+  default, so the `[0,1]`-relative noise params stay meaningful for PAN that
+  only fills part of the uint16 range) and the LR is mapped back to the
+  source dtype, so HR and LR share one radiometric scale.
+- `png` (legacy) — 8-bit path used only for the synthetic smoke-test images.
+
 ```bash
 pip install -r requirements.txt
 
-# generate LR/HR pairs from a folder of HR patches (PNG/JPG/TIF for now)
+# real pipeline: drive from the stage 4 labeled manifest so output aligns
+# exactly with what stage 6 joins (only kept, labeled patches)
+python data_pipeline/05_degrade/make_lr_hr_pairs.py \
+    --manifest out/patches/patch_manifest_labeled.json --out-dir out/pairs --only-labeled
+
+# or from a plain directory of HR images (used for the synthetic smoke test)
 python data_pipeline/05_degrade/make_lr_hr_pairs.py \
     --hr-dir tests/sample_images --out-dir tests/out/pairs
 
@@ -196,10 +208,9 @@ python data_pipeline/05_degrade/validate_against_real_lr.py \
 
 **`tests/sample_images/` are synthetic placeholder patches** (procedurally
 generated grid/building/texture pattern), not real satellite imagery —
-they exist only to smoke-test the pipeline mechanics before SpaceNet/Maxar
-data is available. The `validate_against_real_lr.py` run against them is
-*not* a real validation; it needs actual reference LR chips from a
-comparable sensor once stage 1 (download) is in place.
+they exist only to smoke-test the pipeline mechanics. The
+`validate_against_real_lr.py` run against them is *not* a real validation;
+it needs actual reference LR chips from a comparable sensor.
 
 ## Requirements
 

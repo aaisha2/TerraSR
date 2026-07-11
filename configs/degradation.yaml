@@ -36,6 +36,17 @@ compression:
   enabled: true
   quality_range: [70, 95]               # randomized JPEG re-encode
 
+output:
+  # geotiff: preserve the 16-bit depth + georeferencing of the PAN patches
+  #          (the real training path). HR is copied losslessly; LR is written
+  #          as GeoTIFF with a geotransform scaled by the SR factor.
+  # png:     legacy 8-bit path, used only for the synthetic smoke-test images.
+  format: geotiff
+  # how a native-dtype HR patch is mapped to [0,1] for the degradation math
+  # (see _io.normalize_for_degradation). per_patch_max keeps the [0,1]-relative
+  # noise parameters meaningful for PAN that fills only part of the uint16 range.
+  normalization: per_patch_max
+
 seed: null   # set an int for reproducible dataset builds
 
 validation:
