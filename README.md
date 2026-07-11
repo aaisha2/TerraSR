@@ -11,7 +11,7 @@ pipeline design, dataset decisions, and paper references.
 | 0 — config | done (`configs/degradation.yaml`, `configs/datasets.yaml`) |
 | 1 — download | **working** — SpaceNet (PAN) + Maxar Open Data (pan_analytic), verified against real buckets |
 | 2 — standardize | **working** — PAN/pseudo-PAN extraction + CRS/dtype normalization, tested on a real Maxar crop and a synthetic geographic RGB fixture |
-| 3 — patchify | not started |
+| 3 — patchify | **working** — fixed-grid patch extraction + nodata/blank/saturation filtering, tested on a real Maxar crop straddling a nodata boundary |
 | 4 — terrain labeling | not started |
 | 5 — degrade (LR/HR pairs) | **working**, validated on synthetic test patches only |
 | 6 — package + split | not started |
@@ -68,6 +68,33 @@ luminance pseudo-PAN conversion and the UTM auto-reprojection path).
 Output tags (`pseudo_pan`, `orig_crs`, `orig_dtype`, `reprojected_to_utm`)
 carry through so later stages — and any ablation — can tell true PAN from
 pseudo-PAN without re-deriving it.
+
+## Stage 3 — patchify
+
+```bash
+# 3a: cut a standardized scene into a fixed 256x256 grid (configs/patchify.yaml)
+python data_pipeline/03_patchify/tile_extractor.py \
+    --in-scene standardized.tif --out-dir out/patches
+# or batch a whole directory of standardized scenes:
+#   --in-dir out/standardized_scenes --out-dir out/patches
+
+# 3b: drop nodata/blank/saturated patches (non-destructive by default —
+# writes patch_manifest_filtered.json with keep/drop + reasons per patch;
+# add --move-rejected to physically relocate dropped patches)
+python data_pipeline/03_patchify/patch_filter.py --manifest out/patches/patch_manifest.json
+```
+
+Tested on a real 1600x1600 Maxar crop deliberately straddling a nodata
+boundary in the source scene: extraction produced the expected 6x6 grid of
+256px patches, and the filter correctly dropped every patch that was fully
+or partially nodata (`nodata_fraction`/`std_dev` thresholds) while keeping
+the patches with real terrain content — confirmed visually and by pixel
+stats (dropped patch: min=max=0; kept patch: real DN range, visible
+field/path texture).
+
+Each patch keeps its source scene's tags (`pseudo_pan`, `orig_crs`, etc.)
+plus `source_scene`/`row`/`col`/`tile_id`, which stage 6's geographic
+split depends on to keep all patches from one scene in the same split.
 
 ## Stage 5 — degradation pipeline
 
