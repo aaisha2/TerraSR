@@ -1,0 +1,29 @@
+[
+  {
+    "id": "sample_01",
+    "hr_path": "tests\\out\\pairs\\hr\\sample_01.png",
+    "lr_path": "tests\\out\\pairs\\lr\\sample_01.png",
+    "degradation_params": {
+      "scale_factor": 2,
+      "downsample_method": "bicubic"
+    }
+  },
+  {
+    "id": "sample_02",
+    "hr_path": "tests\\out\\pairs\\hr\\sample_02.png",
+    "lr_path": "tests\\out\\pairs\\lr\\sample_02.png",
+    "degradation_params": {
+      "scale_factor": 2,
+      "downsample_method": "bicubic"
+    }
+  },
+  {
+    "id": "sample_03",
+    "hr_path": "tests\\out\\pairs\\hr\\sample_03.png",
+    "lr_path": "tests\\out\\pairs\\lr\\sample_03.png",
+    "degradation_params": {
+      "scale_factor": 2,
+      "downsample_method": "area"
+    }
+  }
+]

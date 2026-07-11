@@ -1,0 +1,17 @@
+# Stage 0-6: data pipeline
+numpy
+scipy
+opencv-python-headless
+Pillow
+PyYAML
+rasterio
+pandas
+pyarrow
+
+# Stage 7-8: models / training
+torch
+torchvision
+timm
+
+# Stage 9: evaluation
+scikit-image

@@ -1,0 +1,45 @@
+# Single-order degradation pipeline — confirmed with supervisor 2026-07-11.
+# Fixed 2x scale factor (0.5m LR <- 0.25m/0.3m HR), controlled sensor set
+# (SpaceNet / Maxar), NOT blind real-world SR — see docs/plan §4.
+#
+# Order applied per patch: blur -> downsample -> noise -> jpeg
+# (single pass, not the Real-ESRGAN second-order repeat)
+
+scale_factor: 2
+
+blur:
+  # randomly choose one kernel family per patch
+  kernel_choices: ["isotropic_gaussian", "anisotropic_gaussian", "mtf_elliptical"]
+  kernel_probs: [0.4, 0.3, 0.3]
+  kernel_size: 15                 # odd, pixels (in HR space)
+  isotropic_sigma_range: [0.6, 2.4]
+  anisotropic_sigma_range: [0.6, 3.0]
+  anisotropic_angle_range: [0, 180]     # degrees
+  # MTF-elliptical kernel approximates WorldView-class sensor optics
+  # (Nyquist MTF ~0.2-0.3, per Zhu et al. 2020 / MTF-filter literature)
+  mtf_nyquist_range: [0.2, 0.35]
+  mtf_ellipticity_range: [1.0, 1.6]     # 1.0 = circular, >1 = elongated
+
+downsample:
+  # randomly choose one interpolation per patch — avoid overfitting
+  # to a single resampling artifact signature
+  method_choices: ["nearest", "area", "bicubic"]
+  method_probs: [0.2, 0.4, 0.4]
+
+noise:
+  # Poisson (shot noise, signal-dependent) + Gaussian (read noise) mixture
+  # models real sensor physics rather than flat additive noise
+  poisson_scale_range: [0.0, 0.08]      # relative to signal
+  gaussian_sigma_range: [0.0, 0.02]     # relative to [0,1] intensity
+
+compression:
+  enabled: true
+  quality_range: [70, 95]               # randomized JPEG re-encode
+
+seed: null   # set an int for reproducible dataset builds
+
+validation:
+  # stage 5 sub-step: compare synthetic LR against real satellite LR
+  # before locking parameters for the full dataset build
+  metrics: ["noise_variance", "edge_density", "radial_power_spectrum"]
+  real_lr_reference_dir: null   # fill in once reference LR chips are collected

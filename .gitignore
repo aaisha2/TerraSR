@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# large data never belongs in git — lives on RESOLVE / external drive
+data/
+datasets/
+*.tif
+*.tiff
+!tests/sample_images/*.tif
+
+# training artifacts
+checkpoints/
+runs/
+*.pth
+*.ckpt
+
+# node
+webapp/frontend/node_modules/
+webapp/frontend/build/
