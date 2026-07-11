@@ -1,3 +1,7 @@
+# Stage 1 downloads
+boto3            # SpaceNet (anonymous S3)
+requests         # Maxar STAC + ESA WorldCover tiles
+
 # Stage 0-6: data pipeline
 numpy
 scipy
@@ -9,6 +13,10 @@ pandas
 pyarrow
 
 # Stage 7-8: models / training
+# NOTE: this installs the default (often CPU) torch build. On the RESOLVE GPU
+# box install a CUDA build FIRST, matched to the box's CUDA version, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# then `pip install -r requirements.txt` for the rest. See RESOLVE.md.
 torch
 torchvision
 timm

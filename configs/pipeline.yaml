@@ -1,0 +1,40 @@
+# Master config for a full end-to-end run (built for the RESOLVE workstation).
+# run_pipeline.py reads this and drives every stage on the real data/ tree,
+# not the tests/ scratch paths. See RESOLVE.md for the runbook.
+
+dirs:
+  raw: data/raw                    # stage 1 downloads land here (per source)
+  standardized: data/standardized  # stage 2 output (per source subdir)
+  patches: data/patches            # stage 3/4 patches + manifests
+  pairs: data/pairs                # stage 5 LR/HR GeoTIFF pairs
+  dataset: data/dataset            # stage 6 unified manifest + splits
+
+# Per source: standardization mode + whether raw scenes sit in sub-folders.
+# SpaceNet/Maxar carry a true panchromatic band; OpenEarthMap/NAIP are RGB and
+# become pseudo-PAN (grayscale) — supplementary only, per supervisor 2026-07-11.
+sources:
+  spacenet:
+    mode: true_pan
+    recursive: true      # PAN scenes live under AOI sub-folders
+    download_script: data_pipeline/01_download/download_spacenet.py
+  maxar:
+    mode: true_pan
+    recursive: true      # tiles live under event sub-folders
+    download_script: data_pipeline/01_download/download_maxar.py
+  # Supplementary pseudo-PAN sources — enable once their downloaders are wired
+  # (download_openearthmap.py / download_naip.py are stubs for now):
+  # openearthmap:
+  #   mode: rgb_to_pseudo_pan
+  #   recursive: true
+  #   download_script: data_pipeline/01_download/download_openearthmap.py
+  # naip:
+  #   mode: rgb_to_pseudo_pan
+  #   recursive: true
+  #   download_script: data_pipeline/01_download/download_naip.py
+
+configs:
+  datasets: configs/datasets.yaml
+  patchify: configs/patchify.yaml
+  degradation: configs/degradation.yaml
+  terrain: configs/terrain_classes.yaml
+  split: configs/split.yaml

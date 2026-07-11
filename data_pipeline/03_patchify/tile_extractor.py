@@ -69,6 +69,8 @@ def main():
     src_group.add_argument("--in-dir", type=Path, help="a directory of standardized GeoTIFFs (*.tif)")
     ap.add_argument("--out-dir", required=True, type=Path)
     ap.add_argument("--config", default=Path("configs/patchify.yaml"), type=Path)
+    ap.add_argument("--recursive", action="store_true",
+                     help="with --in-dir: also search sub-directories (per-source folders)")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
@@ -76,7 +78,11 @@ def main():
     stride = cfg["stride"]
     drop_partial_edge = cfg["drop_partial_edge"]
 
-    scenes = [args.in_scene] if args.in_scene else sorted(args.in_dir.glob("*.tif"))
+    if args.in_scene:
+        scenes = [args.in_scene]
+    else:
+        globber = args.in_dir.rglob if args.recursive else args.in_dir.glob
+        scenes = sorted(set(globber("*.tif")) | set(globber("*.tiff")))
     if not scenes:
         raise SystemExit(f"no scenes found in {args.in_dir}")
 

@@ -54,6 +54,27 @@ def extract_pseudo_pan(src: rasterio.DatasetReader):
     return data, tags
 
 
+def extract_pan_to_file(in_path: Path, out_path: Path, mode: str, band_index: int = 1) -> dict:
+    """Extract the PAN/pseudo-PAN band from in_path and write it to out_path.
+    Reusable by the batch driver (standardize_scenes.py) and the CLI below."""
+    with rasterio.open(in_path) as src:
+        if mode == "true_pan":
+            data, extra_tags = extract_true_pan(src, band_index)
+        else:
+            data, extra_tags = extract_pseudo_pan(src)
+
+        profile = src.profile.copy()
+        profile.update(count=1, dtype=data.dtype)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(out_path, "w", **profile) as dst:
+            dst.write(data, 1)
+            dst.update_tags(**extra_tags, source_file=in_path.name)
+
+    return {"shape": data.shape, "dtype": str(data.dtype),
+            "min": float(data.min()), "max": float(data.max())}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in", dest="in_path", required=True, type=Path)
@@ -62,23 +83,10 @@ def main():
     ap.add_argument("--band-index", type=int, default=1, help="for true_pan: which band is PAN (1-indexed)")
     args = ap.parse_args()
 
-    with rasterio.open(args.in_path) as src:
-        if args.mode == "true_pan":
-            data, extra_tags = extract_true_pan(src, args.band_index)
-        else:
-            data, extra_tags = extract_pseudo_pan(src)
-
-        profile = src.profile.copy()
-        profile.update(count=1, dtype=data.dtype)
-
-        args.out_path.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(args.out_path, "w", **profile) as dst:
-            dst.write(data, 1)
-            dst.update_tags(**extra_tags, source_file=args.in_path.name)
-
-    print(f"{args.in_path.name} -> {args.out_path.name}  "
-          f"mode={args.mode}  shape={data.shape}  dtype={data.dtype}  "
-          f"range=[{data.min()}, {data.max()}]")
+    info = extract_pan_to_file(args.in_path, args.out_path, args.mode, args.band_index)
+    print(f"{args.in_path.name} -> {args.out_path.name}  mode={args.mode}  "
+          f"shape={info['shape']}  dtype={info['dtype']}  "
+          f"range=[{info['min']}, {info['max']}]")
 
 
 if __name__ == "__main__":

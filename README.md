@@ -4,6 +4,24 @@ Multi-terrain satellite image super-resolution (SwinIR, terrain-embedding +
 terrain-aware loss). See the full build plan artifact for the complete
 pipeline design, dataset decisions, and paper references.
 
+## Full run (RESOLVE workstation)
+
+The entire data build (stages 1–6) runs in one command via the orchestrator,
+which drives every stage on the real `data/` tree defined in
+`configs/pipeline.yaml`:
+
+```bash
+python run_pipeline.py --list-only     # preview the complete download size
+python run_pipeline.py                 # full data build: download -> dataset/
+python run_pipeline.py --with-training # + train baselines/TerraSR + evaluate
+```
+
+**See [RESOLVE.md](RESOLVE.md) for the complete runbook** — environment setup
+(CUDA torch), disk budget (~300–400 GB), the complete download, and
+training/eval. Downloaded imagery and all intermediates live under `data/`
+(gitignored); only code and configs are versioned, so RESOLVE just pulls the
+repo and builds `data/` locally.
+
 ## Status
 
 | Stage | Status |
@@ -59,6 +77,11 @@ python data_pipeline/02_standardize/extract_pan_band.py \
 # already-projected scenes like SpaceNet/Maxar pass through untouched) and
 # dtype (-> uint16), write compressed/tiled GeoTIFF
 python data_pipeline/02_standardize/to_geotiff.py --in extracted.tif --out standardized.tif
+
+# batch: standardize a whole source directory in one call (chains 2a+2b per
+# scene with the right PAN mode) — this is what the orchestrator calls
+python data_pipeline/02_standardize/standardize_scenes.py \
+    --in-dir data/raw/spacenet --out-dir data/standardized/spacenet --mode true_pan --recursive
 ```
 
 Tested against a real cropped window of the downloaded Maxar PAN tile

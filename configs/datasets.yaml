@@ -1,5 +1,11 @@
 # Stage 1 download targets — Tier 1 primary sources only (true PAN band).
 # See docs/plan §2 for the full sourcing rationale and tier breakdown.
+#
+# This is the COMPLETE required source list for the real run: the download
+# scripts (and run_pipeline.py) pull every scene under these AOIs/events with
+# no cap. `--list-only` previews the total size first. To scale the dataset up
+# or down, add/remove AOIs (spacenet.aois) and events (maxar.events) here.
+# The `--max-files` CLI flag exists only for laptop smoke tests.
 
 spacenet:
   bucket: spacenet-dataset          # public, anonymous/unsigned S3 access

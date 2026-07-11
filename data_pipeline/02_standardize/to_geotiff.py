@@ -50,13 +50,10 @@ def reproject_to_utm(src: rasterio.DatasetReader):
     return dst_data, dst_transform, dst_crs
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="in_path", required=True, type=Path)
-    ap.add_argument("--out", dest="out_path", required=True, type=Path)
-    args = ap.parse_args()
-
-    with rasterio.open(args.in_path) as src:
+def standardize_to_file(in_path: Path, out_path: Path) -> dict:
+    """Standardize a single-band raster (CRS + dtype) and write it to out_path.
+    Reusable by the batch driver (standardize_scenes.py) and the CLI below."""
+    with rasterio.open(in_path) as src:
         if src.count != 1:
             raise ValueError(f"expected a single-band input (run extract_pan_band.py "
                               f"first), got {src.count} bands")
@@ -81,12 +78,22 @@ def main():
         "orig_crs": orig_crs,
     })
 
-    args.out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_standard_geotiff(args.out_path, standardized, transform, crs, tags)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_standard_geotiff(out_path, standardized, transform, crs, tags)
 
-    print(f"{args.in_path.name} -> {args.out_path.name}  "
-          f"crs={crs}  dtype={standardized.dtype}  "
-          f"reprojected={reprojected}  shape={standardized.shape}")
+    return {"crs": str(crs), "dtype": str(standardized.dtype),
+            "reprojected": reprojected, "shape": standardized.shape}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--in", dest="in_path", required=True, type=Path)
+    ap.add_argument("--out", dest="out_path", required=True, type=Path)
+    args = ap.parse_args()
+
+    info = standardize_to_file(args.in_path, args.out_path)
+    print(f"{args.in_path.name} -> {args.out_path.name}  crs={info['crs']}  "
+          f"dtype={info['dtype']}  reprojected={info['reprojected']}  shape={info['shape']}")
 
 
 if __name__ == "__main__":
