@@ -10,7 +10,7 @@ pipeline design, dataset decisions, and paper references.
 |---|---|
 | 0 — config | done (`configs/degradation.yaml`, `configs/datasets.yaml`) |
 | 1 — download | **working** — SpaceNet (PAN) + Maxar Open Data (pan_analytic), verified against real buckets |
-| 2 — standardize | not started |
+| 2 — standardize | **working** — PAN/pseudo-PAN extraction + CRS/dtype normalization, tested on a real Maxar crop and a synthetic geographic RGB fixture |
 | 3 — patchify | not started |
 | 4 — terrain labeling | not started |
 | 5 — degrade (LR/HR pairs) | **working**, validated on synthetic test patches only |
@@ -45,6 +45,29 @@ python data_pipeline/01_download/download_maxar.py --event Brazil-Flooding-May24
 
 Downloaded imagery lands under `data/raw/` (gitignored — this is real
 multi-hundred-MB-per-scene satellite data, never committed).
+
+## Stage 2 — standardization
+
+Two chained scripts per patch/scene:
+
+```bash
+# 2a: pull out the PAN (or pseudo-PAN) band, tagging pseudo_pan true/false
+python data_pipeline/02_standardize/extract_pan_band.py \
+    --in raw_scene.tif --out extracted.tif --mode true_pan   # or rgb_to_pseudo_pan
+
+# 2b: normalize CRS (reprojects to local UTM only if source is geographic —
+# already-projected scenes like SpaceNet/Maxar pass through untouched) and
+# dtype (-> uint16), write compressed/tiled GeoTIFF
+python data_pipeline/02_standardize/to_geotiff.py --in extracted.tif --out standardized.tif
+```
+
+Tested against a real cropped window of the downloaded Maxar PAN tile
+(true-PAN passthrough, no unnecessary reprojection since it's already in
+UTM) and a synthetic RGB fixture in geographic coordinates (exercises the
+luminance pseudo-PAN conversion and the UTM auto-reprojection path).
+Output tags (`pseudo_pan`, `orig_crs`, `orig_dtype`, `reprojected_to_utm`)
+carry through so later stages — and any ablation — can tell true PAN from
+pseudo-PAN without re-deriving it.
 
 ## Stage 5 — degradation pipeline
 

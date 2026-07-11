@@ -9,6 +9,10 @@ datasets/
 *.tif
 *.tiff
 !tests/sample_images/*.tif
+!tests/sample_rasters/*.tif
+
+# regenerable pipeline outputs — rerun the stage scripts to reproduce
+tests/out/
 
 # training artifacts
 checkpoints/
