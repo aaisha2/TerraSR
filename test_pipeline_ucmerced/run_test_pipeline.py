@@ -83,19 +83,24 @@ def main():
         print("\ndata build complete (training skipped).")
         return
 
-    # --- stages 7-8: train baseline SwinIR + TerraSR (REAL scripts, test configs) ---
-    run([PY, "training/train_baseline.py", "--config", f"{CFG}/train_baseline.yaml"])
+    # --- stages 7-8: train the three baselines (SRCNN/SRGAN/SwinIR) + TerraSR
+    #     (REAL scripts, test configs). Baselines share train_baseline.yaml;
+    #     model.name + out_dir are overridden per model. ---
+    for name in ("srcnn", "srgan", "swinir"):
+        run([PY, "training/train_baseline.py", "--config", f"{CFG}/train_baseline.yaml",
+             "--override", f"model.name={name}", f"train.out_dir={CKPT}/{name}"])
     run([PY, "training/train_terrasr.py", "--config", f"{CFG}/train_terrasr.yaml"])
 
-    # --- stage 9: evaluate (REAL scripts) ---
+    # --- stage 9: evaluate all four + bicubic (REAL scripts). TerraSR last so
+    #     the per-terrain delta reads terrasr - each baseline. ---
     test_csv = f"{DATASET}/test.csv"
     terrain_cfg = f"{CFG}/ucmerced_terrain.yaml"
+    ckpts = [f"{CKPT}/srcnn/best.pth", f"{CKPT}/srgan/best.pth",
+             f"{CKPT}/swinir/best.pth", f"{CKPT}/terrasr/best.pth"]
     run([PY, "evaluation/eval_psnr_ssim.py", "--test-csv", test_csv, "--with-bicubic",
-         "--terrain-config", terrain_cfg,
-         "--checkpoints", f"{CKPT}/swinir/best.pth", f"{CKPT}/terrasr/best.pth"])
+         "--terrain-config", terrain_cfg, "--checkpoints", *ckpts])
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", test_csv,
-         "--terrain-config", terrain_cfg,
-         "--checkpoints", f"{CKPT}/swinir/best.pth", f"{CKPT}/terrasr/best.pth"])
+         "--terrain-config", terrain_cfg, "--checkpoints", *ckpts])
 
     print("\nUC Merced test pipeline complete.")
     print(f"  dataset: {DATASET}/  |  checkpoints: {CKPT}/")

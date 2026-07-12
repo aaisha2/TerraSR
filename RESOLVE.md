@@ -131,11 +131,15 @@ python training/train_baseline.py --config configs/train_baseline.yaml --overrid
 # TerraSR (terrain embedding + terrain-aware loss)
 python training/train_terrasr.py --config configs/train_terrasr.yaml
 
-# evaluation — overall + per-terrain, vs the bicubic floor
+# evaluation — all four models + the bicubic floor (transformer vs CNN vs GAN
+# vs terrain-aware). TerraSR is passed LAST so the per-terrain delta reads
+# terrasr - each baseline.
 python evaluation/eval_psnr_ssim.py  --test-csv data/dataset/test.csv --with-bicubic \
-    --checkpoints checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
+    --checkpoints checkpoints/srcnn/best.pth checkpoints/srgan/best.pth \
+                  checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
 python evaluation/eval_per_terrain.py --test-csv data/dataset/test.csv \
-    --checkpoints checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
+    --checkpoints checkpoints/srcnn/best.pth checkpoints/srgan/best.pth \
+                  checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
 ```
 
 Training auto-uses the GPU when `torch.cuda.is_available()`. Tune

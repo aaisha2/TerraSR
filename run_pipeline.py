@@ -107,19 +107,20 @@ def stage_package(cfg, dirs):
 
 
 def stage_training():
-    """Stages 7-9. Trains the three baselines + TerraSR, then evaluates."""
-    run([PY, "training/train_baseline.py", "--config", "configs/train_baseline.yaml",
-         "--override", "model.name=srcnn", "train.out_dir=checkpoints/srcnn"])
-    run([PY, "training/train_baseline.py", "--config", "configs/train_baseline.yaml",
-         "--override", "model.name=srgan", "train.out_dir=checkpoints/srgan"])
-    run([PY, "training/train_baseline.py", "--config", "configs/train_baseline.yaml",
-         "--override", "model.name=swinir", "train.out_dir=checkpoints/swinir"])
+    """Stages 7-9. Trains the three baselines + TerraSR, then evaluates all of
+    them (transformer vs CNN vs GAN vs terrain-aware). TerraSR is passed LAST to
+    the evaluators so the per-terrain delta reads terrasr - each baseline."""
+    for name in ("srcnn", "srgan", "swinir"):
+        run([PY, "training/train_baseline.py", "--config", "configs/train_baseline.yaml",
+             "--override", f"model.name={name}", f"train.out_dir=checkpoints/{name}"])
     run([PY, "training/train_terrasr.py", "--config", "configs/train_terrasr.yaml"])
+
+    ckpts = ["checkpoints/srcnn/best.pth", "checkpoints/srgan/best.pth",
+             "checkpoints/swinir/best.pth", "checkpoints/terrasr/best.pth"]
     run([PY, "evaluation/eval_psnr_ssim.py", "--test-csv", "data/dataset/test.csv",
-         "--with-bicubic", "--checkpoints", "checkpoints/swinir/best.pth",
-         "checkpoints/terrasr/best.pth"])
+         "--with-bicubic", "--checkpoints", *ckpts])
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", "data/dataset/test.csv",
-         "--checkpoints", "checkpoints/swinir/best.pth", "checkpoints/terrasr/best.pth"])
+         "--checkpoints", *ckpts])
 
 
 def main():

@@ -23,7 +23,8 @@ data stay untouched.
 ## Run
 
 ```bash
-# full: download -> prepare -> degrade -> package -> train (SwinIR + TerraSR) -> evaluate
+# full: download -> prepare -> degrade -> package
+#       -> train (SRCNN + SRGAN + SwinIR + TerraSR) -> evaluate all four
 python test_pipeline_ucmerced/run_test_pipeline.py
 
 # faster (fewer images per class):
@@ -46,8 +47,8 @@ link is often down) into `data/raw/` and is idempotent (re-runs skip it).
 | 4 label | `prepare_ucmerced.py` — terrain from the UC Merced **class** (folder name) via `configs/ucmerced_terrain.yaml`, not ESA WorldCover (UC Merced tiles aren't georeferenced) |
 | 5 degrade | **real** `make_lr_hr_pairs.py` |
 | 6 package | **real** `build_manifest.py` + `split_train_val_test.py` + `dataset_stats.py` |
-| 7–8 train | **real** `train_baseline.py` (SwinIR) + `train_terrasr.py`, with this folder's small-model configs |
-| 9 evaluate | **real** `eval_psnr_ssim.py` + `eval_per_terrain.py` |
+| 7–8 train | **real** `train_baseline.py` for all three baselines (SRCNN, SRGAN, SwinIR) + `train_terrasr.py`, with this folder's small-model configs |
+| 9 evaluate | **real** `eval_psnr_ssim.py` + `eval_per_terrain.py` over all four models + bicubic; TerraSR is passed last so the per-terrain delta reads `terrasr − each baseline` |
 
 Each UC Merced image is its own `source_scene`, so stage 6's geographic-block
 split becomes a clean per-image split (no leakage). The class→terrain map

@@ -60,16 +60,20 @@ def main():
         print(table.to_string(float_format=lambda v: f"{v:.3f}"))
         print()
 
-    # explicit per-terrain delta when comparing exactly two models
+    # Per-terrain deltas against the LAST checkpoint (by convention the model
+    # of interest — TerraSR — passed last), so the terrain-aware gain over each
+    # baseline is explicit whether you compare two models or all of them.
     labels = list(tables)
-    if len(labels) == 2:
-        a, b = tables[labels[0]], tables[labels[1]]
-        joined = a.join(b, lsuffix="_a", rsuffix="_b")
-        joined["dPSNR"] = joined["psnr_b"] - joined["psnr_a"]
-        joined["dSSIM"] = joined["ssim_b"] - joined["ssim_a"]
-        print(f"=== delta ({labels[1]} - {labels[0]}) ===")
-        print(joined[["dPSNR", "dSSIM"]].to_string(float_format=lambda v: f"{v:+.3f}"))
-        print()
+    if len(labels) >= 2:
+        ref_label = labels[-1]
+        ref = tables[ref_label]
+        for other in labels[:-1]:
+            joined = tables[other].join(ref, lsuffix="_base", rsuffix="_ref")
+            joined["dPSNR"] = joined["psnr_ref"] - joined["psnr_base"]
+            joined["dSSIM"] = joined["ssim_ref"] - joined["ssim_base"]
+            print(f"=== delta ({ref_label} - {other}) ===")
+            print(joined[["dPSNR", "dSSIM"]].to_string(float_format=lambda v: f"{v:+.3f}"))
+            print()
 
     if args.out_csv:
         combined = pd.concat({k: v for k, v in tables.items()}, names=["model"])
