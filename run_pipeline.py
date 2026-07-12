@@ -121,6 +121,10 @@ def stage_training():
          "--with-bicubic", "--checkpoints", *ckpts])
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", "data/dataset/test.csv",
          "--checkpoints", *ckpts])
+    # results report (downloadable .docx + .md) — ready to share with the supervisor
+    run([PY, "evaluation/make_results_report.py", "--test-csv", "data/dataset/test.csv",
+         "--split-manifest", "data/dataset/dataset_manifest_split.csv",
+         "--out", "data/dataset/results_report", "--checkpoints", *ckpts])
 
 
 def main():

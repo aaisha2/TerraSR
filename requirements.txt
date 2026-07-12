@@ -21,5 +21,6 @@ torch
 torchvision
 timm
 
-# Stage 9: evaluation
+# Stage 9: evaluation + results report
 scikit-image
+python-docx      # results report as a shareable .docx (Markdown always written regardless)

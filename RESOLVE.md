@@ -140,7 +140,17 @@ python evaluation/eval_psnr_ssim.py  --test-csv data/dataset/test.csv --with-bic
 python evaluation/eval_per_terrain.py --test-csv data/dataset/test.csv \
     --checkpoints checkpoints/srcnn/best.pth checkpoints/srgan/best.pth \
                   checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
+
+# shareable results document (.docx + .md) with all the tables above
+python evaluation/make_results_report.py --test-csv data/dataset/test.csv \
+    --split-manifest data/dataset/dataset_manifest_split.csv \
+    --out data/dataset/results_report \
+    --checkpoints checkpoints/srcnn/best.pth checkpoints/srgan/best.pth \
+                  checkpoints/swinir/best.pth checkpoints/terrasr/best.pth
 ```
+
+`run_pipeline.py --with-training` writes this report automatically to
+`data/dataset/results_report.docx` at the end of the run.
 
 Training auto-uses the GPU when `torch.cuda.is_available()`. Tune
 `train.batch_size`, `train.epochs`, and `model.*` (full-size SwinIR:

@@ -102,8 +102,16 @@ def main():
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", test_csv,
          "--terrain-config", terrain_cfg, "--checkpoints", *ckpts])
 
+    # --- results report (downloadable .docx + .md) ---
+    run([PY, "evaluation/make_results_report.py", "--test-csv", test_csv,
+         "--terrain-config", terrain_cfg,
+         "--split-manifest", f"{DATASET}/dataset_manifest_split.csv",
+         "--title", "TerraSR - UC Merced Pipeline Results",
+         "--out", f"{DATASET}/results_report", "--checkpoints", *ckpts])
+
     print("\nUC Merced test pipeline complete.")
     print(f"  dataset: {DATASET}/  |  checkpoints: {CKPT}/")
+    print(f"  results report: {DATASET}/results_report.docx (+ .md)")
     print(f"  web app: TERRASR_CKPT={CKPT}/terrasr/best.pth python webapp/backend/app.py")
 
 

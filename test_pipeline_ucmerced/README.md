@@ -49,6 +49,7 @@ link is often down) into `data/raw/` and is idempotent (re-runs skip it).
 | 6 package | **real** `build_manifest.py` + `split_train_val_test.py` + `dataset_stats.py` |
 | 7–8 train | **real** `train_baseline.py` for all three baselines (SRCNN, SRGAN, SwinIR) + `train_terrasr.py`, with this folder's small-model configs |
 | 9 evaluate | **real** `eval_psnr_ssim.py` + `eval_per_terrain.py` over all four models + bicubic; TerraSR is passed last so the per-terrain delta reads `terrasr − each baseline` |
+| — report | **real** `make_results_report.py` writes a shareable `results_report.docx` (+ `.md`) with the composition, overall, per-terrain and delta tables |
 
 Each UC Merced image is its own `source_scene`, so stage 6's geographic-block
 split becomes a clean per-image split (no leakage). The class→terrain map
