@@ -1,7 +1,14 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .venv/
 venv/
+
+# local AI / editor configuration
+.claude/
+
+# IDE settings
+.vscode/
+.idea/
 
 # large data never belongs in git — lives on RESOLVE / external drive
 data/
@@ -13,13 +20,29 @@ datasets/
 
 # regenerable pipeline outputs — rerun the stage scripts to reproduce
 tests/out/
+outputs/
+temp/
 
 # training artifacts
 checkpoints/
 runs/
+logs/
 *.pth
+*.pt
 *.ckpt
+*.onnx
 
 # node
 webapp/frontend/node_modules/
 webapp/frontend/build/
+
+# jupyter
+.ipynb_checkpoints/
+
+# operating system
+.DS_Store
+Thumbs.db
+
+# miscellaneous
+*.log
+*.tmp
