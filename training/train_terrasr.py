@@ -24,8 +24,8 @@ import models  # noqa: E402
 from models.losses.terrain_aware_loss import TerrainAwareLoss  # noqa: E402
 from terrasr_data import TerraSRDataset, load_terrain_index  # noqa: E402
 from training.train_baseline import apply_overrides  # noqa: E402
-from training.train_utils import (AverageMeter, get_device, psnr,  # noqa: E402
-                                    save_checkpoint, set_seed)
+from training.train_utils import (AverageMeter, get_device, load_checkpoint,  # noqa: E402
+                                    psnr, restore_rng_state, save_checkpoint, set_seed)
 
 
 def make_loader(csv_path, terrain_index, cfg, train):
@@ -57,7 +57,7 @@ def validate(model, loader, device):
     return meter.avg
 
 
-def train(cfg):
+def train(cfg, fresh=False):
     set_seed(cfg["train"]["seed"])
     device = get_device()
     print(f"device: {device}")
@@ -77,9 +77,26 @@ def train(cfg):
 
     out_dir = Path(cfg["train"]["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
-    best_psnr = -1.0
+    extra = {"model_name": cfg["model"]["name"], "config": cfg}
 
-    for epoch in range(1, cfg["train"]["epochs"] + 1):
+    # resume from last.pth if present (unless --fresh); last.pth is saved every
+    # epoch below, so a crash / power loss is recoverable.
+    start_epoch = 1
+    best_psnr = -1.0
+    last_path = out_dir / "last.pth"
+    if last_path.exists() and not fresh:
+        ckpt = load_checkpoint(last_path, model, optimizer, map_location=device)
+        start_epoch = ckpt["epoch"] + 1
+        best_psnr = ckpt.get("best_metric", -1.0)
+        restore_rng_state(ckpt.get("rng_state"))
+        print(f"resuming from epoch {start_epoch} (best val PSNR so far {best_psnr:.2f} dB)")
+
+    if start_epoch > cfg["train"]["epochs"]:
+        print(f"already trained {cfg['train']['epochs']} epochs (last.pth at epoch "
+              f"{start_epoch-1}); nothing to do. Use --fresh to retrain.")
+        return
+
+    for epoch in range(start_epoch, cfg["train"]["epochs"] + 1):
         model.train()
         loss_meter = AverageMeter()
         last_components = {}
@@ -99,15 +116,14 @@ def train(cfg):
         if epoch % cfg["train"]["val_every"] == 0:
             val_psnr = validate(model, val_loader, device)
             msg += f"  val PSNR {val_psnr:.2f} dB"
-            if val_psnr > best_psnr:
+            if val_psnr > best_psnr:                       # best.pth: only on improvement
                 best_psnr = val_psnr
-                save_checkpoint(out_dir / "best.pth", model, optimizer, epoch, best_psnr,
-                                extra={"model_name": cfg["model"]["name"], "config": cfg})
+                save_checkpoint(out_dir / "best.pth", model, optimizer, epoch, best_psnr, extra=extra)
                 msg += "  <- best"
+        # last.pth: EVERY epoch, so training can resume exactly where it stopped
+        save_checkpoint(last_path, model, optimizer, epoch, best_psnr, extra=extra)
         print(msg)
 
-    save_checkpoint(out_dir / "last.pth", model, optimizer, cfg["train"]["epochs"], best_psnr,
-                    extra={"model_name": cfg["model"]["name"], "config": cfg})
     print(f"done. best val PSNR {best_psnr:.2f} dB. checkpoints -> {out_dir}")
 
 
@@ -115,10 +131,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--override", nargs="*", default=[])
+    ap.add_argument("--fresh", action="store_true",
+                     help="ignore any existing last.pth and start training from scratch")
     args = ap.parse_args()
     cfg = yaml.safe_load(args.config.read_text())
     cfg = apply_overrides(cfg, args.override)
-    train(cfg)
+    train(cfg, fresh=args.fresh)
 
 
 if __name__ == "__main__":

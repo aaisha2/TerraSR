@@ -27,7 +27,9 @@ TERRAIN_MODELS = {"terrasr", "terrasr_swinir"}
 
 
 def load_model_from_checkpoint(ckpt_path, device):
-    ckpt = torch.load(ckpt_path, map_location=device)
+    # weights_only=False: our own checkpoints carry a config dict + RNG state
+    # that the PyTorch 2.6+ safe loader rejects. Trusted (self-produced).
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     name = ckpt["model_name"]
     model = models.build(name, ckpt["config"]["model"])
     model.load_state_dict(ckpt["model_state"])

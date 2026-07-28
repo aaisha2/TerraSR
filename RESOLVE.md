@@ -156,6 +156,15 @@ Training auto-uses the GPU when `torch.cuda.is_available()`. Tune
 `train.batch_size`, `train.epochs`, and `model.*` (full-size SwinIR:
 `embed_dim: 60`, `depths: [6,6,6,6]`) in the train configs or via `--override`.
 
+**Crash-safe / resumable.** Every epoch writes `last.pth` (model + optimizer +
+epoch + RNG) atomically, and `best.pth` is overwritten only when validation
+PSNR improves. If training stops — crash, power loss, or you hit Ctrl-C — just
+re-run the exact same command: it detects `last.pth` and resumes from the next
+epoch (`resuming from epoch N …`), so you never lose completed epochs even if
+the last one wasn't a new best. Add `--fresh` to ignore an existing `last.pth`
+and start over. Checkpoints are written to a temp file then atomically renamed,
+so a power loss mid-write can't corrupt an existing checkpoint.
+
 ---
 
 ## Quick reference

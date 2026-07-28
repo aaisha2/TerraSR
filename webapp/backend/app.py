@@ -50,7 +50,9 @@ def _load_model():
     if not ckpt_path.exists():
         print(f"[TerraSR] no checkpoint at {ckpt_path} — using bicubic fallback")
         return
-    ckpt = torch.load(ckpt_path, map_location=STATE["device"])
+    # weights_only=False: our own checkpoint carries a config dict + RNG state
+    # the PyTorch 2.6+ safe loader rejects. Trusted (self-produced).
+    ckpt = torch.load(ckpt_path, map_location=STATE["device"], weights_only=False)
     name = ckpt["model_name"]
     model = models.build(name, ckpt["config"]["model"])
     model.load_state_dict(ckpt["model_state"])
