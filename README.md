@@ -22,6 +22,28 @@ training/eval. Downloaded imagery and all intermediates live under `data/`
 (gitignored); only code and configs are versioned, so RESOLVE just pulls the
 repo and builds `data/` locally.
 
+## Viewing the imagery (16-bit GeoTIFFs)
+
+Stages 2–5 write 16-bit single-band GeoTIFFs, which Windows Photos can't open —
+and viewers that can usually render them near-black, because PAN data occupies
+only a slice of the 16-bit range. `tools/preview.py` applies a percentile
+contrast stretch (what a GIS viewer does) so you can actually see them:
+
+```bash
+# browse any stage's output: PNGs on disk + a self-contained contact sheet
+python tools/preview.py --input data/standardized/maxar --out-dir previews/std
+python tools/preview.py --input data/patches --html previews/patches.html --limit 40
+
+# tune configs/degradation.yaml: HR vs LR side by side, plus matched zoom crops
+# where blur / noise / aliasing are actually visible, annotated with the params
+python tools/preview.py --pairs data/pairs --html previews/degradation.html --limit 12
+```
+
+The HTML pages are self-contained (images embedded) — just double-click to open
+in any browser. Stretch is configurable so you can compare like-for-like:
+`--stretch percentile|minmax|none` (`none` shows the raw mapping a naive viewer
+would give). `previews/` is gitignored.
+
 ## Status
 
 | Stage | Status |

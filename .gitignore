@@ -20,6 +20,9 @@ datasets/
 
 # regenerable pipeline outputs — rerun the stage scripts to reproduce
 tests/out/
+
+# generated image previews (tools/preview.py) — regenerate any time
+previews/
 outputs/
 temp/
 
