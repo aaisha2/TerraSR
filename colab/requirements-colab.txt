@@ -1,0 +1,30 @@
+# Colab pip requirements for TerraSR.
+#
+# DO NOT add torch or torchvision here.
+# Google Colab pre-installs a CUDA-enabled PyTorch build; pip-installing these
+# would overwrite it with a CPU-only build and silently break GPU training.
+# The main requirements.txt is for workstation use (install the CUDA wheel first).
+#
+# Usage (run inside the notebook, or manually in a Colab cell):
+#   pip install -q -r colab/requirements-colab.txt
+
+# Stage 1 downloads
+boto3            # SpaceNet anonymous S3 access
+requests         # Maxar STAC catalog + ESA WorldCover tile downloads
+
+# Stages 2-6: data pipeline
+numpy
+scipy
+opencv-python-headless
+Pillow
+PyYAML
+rasterio         # ships its own GDAL wheel — no system GDAL needed on Colab
+pandas
+pyarrow
+
+# Stages 7-8: model extras (torch/torchvision already present in Colab)
+timm             # SwinIR uses timm's DropPath
+
+# Stage 9: evaluation + results report
+scikit-image
+python-docx      # .docx results report

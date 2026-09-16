@@ -1,0 +1,39 @@
+# EXPERIMENT 1 - true PAN only (SpaceNet + Maxar pan_analytic + CORE3D).
+# pan_filter drops every pseudo_pan=true row, so this arm never sees
+# grayscale-converted RGB. This is the primary//reference model.
+model:
+  name: terrasr
+  scale_factor: 2
+  num_channels: 1
+  embed_dim: 60
+  depths:
+  - 6
+  - 6
+  - 6
+  - 6
+  num_heads:
+  - 6
+  - 6
+  - 6
+  - 6
+  window_size: 8
+  num_terrains: 7
+  embed_dim_terrain: 32
+data:
+  train_csv: data/dataset/train.csv
+  val_csv: data/dataset/val.csv
+  terrain_config: configs/terrain_classes.yaml
+  normalize: per_patch_max
+  augment: true
+  pan_filter: true_pan_only
+loss:
+  config: configs/terrain_aware_loss.yaml
+  disable_perceptual: false
+train:
+  epochs: 100
+  batch_size: 16
+  lr: 0.0002
+  num_workers: 4
+  seed: 42
+  val_every: 1
+  out_dir: checkpoints/exp1_pan_only/terrasr

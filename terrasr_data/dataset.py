@@ -64,21 +64,51 @@ def _read_image(path: str):
 
 class TerraSRDataset(Dataset):
     def __init__(self, manifest_csv, terrain_index: dict, split=None,
-                 normalize="per_patch_max", augment=False):
+                 normalize="per_patch_max", augment=False, pan_filter="all"):
         """
         manifest_csv:  a stage 6 manifest (dataset_manifest_split.csv) or a
                        per-split CSV (train.csv / val.csv / test.csv).
         split:         if given, filter rows to this split (train/val/test).
         normalize:     'per_patch_max' (HR max per sample) or 'dtype_max'.
         augment:       random 8-fold D4 flips/rotations (train only).
+        pan_filter:    which PAN provenance to train/evaluate on --
+                         'true_pan_only'   Experiment 1: drop pseudo-PAN rows
+                         'pseudo_pan_only' ablation: pseudo-PAN rows only
+                         'all'             Experiment 2: true PAN + pseudo-PAN
+                       Driven by the manifest's `pseudo_pan` column, which
+                       stage 2 tags per source. Raises if the column is missing
+                       but a filter was requested, rather than silently
+                       training on the wrong mix.
         """
         df = pd.read_csv(manifest_csv)
         if split is not None and "split" in df.columns:
-            df = df[df["split"] == split].reset_index(drop=True)
-        self.df = df
+            df = df[df["split"] == split]
+
+        if pan_filter and pan_filter != "all":
+            if "pseudo_pan" not in df.columns:
+                raise ValueError(
+                    f"pan_filter='{pan_filter}' requested but the manifest has no "
+                    f"'pseudo_pan' column ({manifest_csv}). Rebuild it with stage 6 "
+                    f"(build_manifest.py) so PAN provenance is recorded.")
+            # the column round-trips through CSV as either bool or the strings
+            # 'true'/'false', so normalise before comparing
+            is_pseudo = df["pseudo_pan"].astype(str).str.lower().isin(["true", "1"])
+            if pan_filter == "true_pan_only":
+                df = df[~is_pseudo]
+            elif pan_filter == "pseudo_pan_only":
+                df = df[is_pseudo]
+            else:
+                raise ValueError(f"unknown pan_filter: {pan_filter}")
+            if df.empty:
+                raise ValueError(
+                    f"pan_filter='{pan_filter}' left 0 patches from {manifest_csv} — "
+                    f"check that the expected sources were ingested.")
+
+        self.df = df.reset_index(drop=True)
         self.terrain_index = terrain_index
         self.normalize = normalize
         self.augment = augment
+        self.pan_filter = pan_filter
 
     def __len__(self):
         return len(self.df)

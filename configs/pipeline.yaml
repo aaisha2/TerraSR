@@ -1,6 +1,7 @@
-# Master config for a full end-to-end run (built for the RESOLVE workstation).
+# Master config for a full end-to-end run.
 # run_pipeline.py reads this and drives every stage on the real data/ tree,
-# not the tests/ scratch paths. See RESOLVE.md for the runbook.
+# not the tests/ scratch paths. See RESOLVE.md for the workstation runbook
+# or colab/TerraSR_Colab.ipynb to run on Google Colab.
 
 dirs:
   raw: data/raw                    # stage 1 downloads land here (per source)
@@ -21,16 +22,25 @@ sources:
     mode: true_pan
     recursive: true      # tiles live under event sub-folders
     download_script: data_pipeline/01_download/download_maxar.py
-  # Supplementary pseudo-PAN sources — enable once their downloaders are wired
-  # (download_openearthmap.py / download_naip.py are stubs for now):
-  # openearthmap:
+  core3d:
+    mode: true_pan       # IARPA CORE3D WorldView-2/3 PAN, 0.34-0.46 m
+    recursive: true      # crops/scenes live under site sub-folders
+    download_script: data_pipeline/01_download/download_core3d.py
+    # scenes are 1-2.7 GB each (311 GB total); pass --windows N to the script
+    # to range-read crops instead. See RESOLVE.md.
+
+  # --- pseudo-PAN sources (Experiment 2 ONLY) -----------------------------
+  # These are RGB, converted to grayscale by mode rgb_to_pseudo_pan and tagged
+  # pseudo_pan=true, so `pan_filter: true_pan_only` excludes them from
+  # Experiment 1. Enable by uncommenting; they download into data/raw_rgb/.
+  # naip_pc:
   #   mode: rgb_to_pseudo_pan
   #   recursive: true
-  #   download_script: data_pipeline/01_download/download_openearthmap.py
-  # naip:
+  #   download_script: data_pipeline/01_download/download_naip_pc.py
+  # maxar_visual:                # same downloader as maxar, --asset visual
   #   mode: rgb_to_pseudo_pan
   #   recursive: true
-  #   download_script: data_pipeline/01_download/download_naip.py
+  #   download_script: null      # run download_maxar.py --asset visual manually
 
 configs:
   datasets: configs/datasets.yaml

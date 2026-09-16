@@ -13,10 +13,13 @@ pandas
 pyarrow
 
 # Stage 7-8: models / training
-# NOTE: this installs the default (often CPU) torch build. On the RESOLVE GPU
-# box install a CUDA build FIRST, matched to the box's CUDA version, e.g.:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-# then `pip install -r requirements.txt` for the rest. See RESOLVE.md.
+# WORKSTATION: install a CUDA-matched wheel first (see RESOLVE.md), then run
+#   pip install -r requirements.txt
+#   e.g.: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# GOOGLE COLAB: do NOT run this file directly. Use colab/requirements-colab.txt
+#   instead — it intentionally omits torch/torchvision because Colab already
+#   provides a CUDA-enabled build and pip-installing these would overwrite it.
 torch
 torchvision
 timm

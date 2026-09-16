@@ -1,0 +1,40 @@
+# EXPERIMENT 2 - true PAN + pseudo-PAN (adds grayscale-converted RGB:
+# Maxar `visual`, NAIP). pan_filter='all' keeps both provenances.
+# Compare against Experiment 1 with evaluation/compare_experiments.py; both
+# arms are evaluated on the SAME true-PAN test set.
+model:
+  name: terrasr
+  scale_factor: 2
+  num_channels: 1
+  embed_dim: 60
+  depths:
+  - 6
+  - 6
+  - 6
+  - 6
+  num_heads:
+  - 6
+  - 6
+  - 6
+  - 6
+  window_size: 8
+  num_terrains: 7
+  embed_dim_terrain: 32
+data:
+  train_csv: data/dataset/train.csv
+  val_csv: data/dataset/val.csv
+  terrain_config: configs/terrain_classes.yaml
+  normalize: per_patch_max
+  augment: true
+  pan_filter: all
+loss:
+  config: configs/terrain_aware_loss.yaml
+  disable_perceptual: false
+train:
+  epochs: 100
+  batch_size: 16
+  lr: 0.0002
+  num_workers: 4
+  seed: 42
+  val_every: 1
+  out_dir: checkpoints/exp2_pan_plus_pseudo/terrasr

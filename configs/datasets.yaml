@@ -35,3 +35,61 @@ maxar:
     - Brazil-Flooding-May24     # water / flood terrain
     - Belize-Wildfires-June24   # forest / burn scar terrain
   out_dir: data/raw/maxar
+
+# ---------------------------------------------------------------------------
+# TRUE PAN (Experiment 1) — third source, added 2026-07-28
+# ---------------------------------------------------------------------------
+core3d:
+  # IARPA CORE3D public data, hosted by SpaceNet in the SAME public bucket we
+  # already use, so no new credentials. Verified live 2026-07-28:
+  #   154 true-PAN GeoTIFFs, ~311 GB, WorldView-2 + WorldView-3,
+  #   measured GSD 0.34-0.46 m, single-band uint16, tiled with overviews.
+  # The real imagery is the `-P1BS-*_lv1.tif` files; the same-named plain
+  # `.tif` are 0-byte VRT sidecars, so the downloader matches BOTH patterns.
+  bucket: spacenet-dataset
+  prefix: "Hosted-Datasets/CORE3D-Public-Data/Satellite-Images/"
+  min_scene_bytes: 10000000       # skips the 0-byte sidecars and stubs
+  # sites add terrain SpaceNet lacks: Omaha = Midwest agriculture,
+  # Jacksonville/Tampa = coastal + water, UCSD = arid/chaparral coastal,
+  # Richmond = urban + forest.
+  sites: [Jacksonville, Omaha, Richmond, Tampa, UCSD]
+  out_dir: data/raw/core3d
+
+# ---------------------------------------------------------------------------
+# PSEUDO-PAN (Experiment 2 only) — RGB sources, converted to grayscale by
+# stage 2's rgb_to_pseudo_pan mode and tagged pseudo_pan=true. These must
+# never enter the Experiment 1 training set.
+# ---------------------------------------------------------------------------
+maxar_visual:
+  # Same STAC catalog and downloader as `maxar` above, just the 3-band `visual`
+  # asset instead of `pan_analytic`. Cheapest possible pseudo-PAN source: same
+  # scenes, same resolution, same licence — so a PAN-vs-pseudo-PAN comparison
+  # is not confounded by a change of sensor or geography.
+  # Run:  python data_pipeline/01_download/download_maxar.py \
+  #           --asset visual --out-dir data/raw_rgb/maxar_visual
+  asset: visual
+  out_dir: data/raw_rgb/maxar_visual
+
+naip_pc:
+  # USDA NAIP via Microsoft Planetary Computer. The naip-* S3 buckets refuse
+  # anonymous access (verified: AccessDenied), but the PC STAC API searches
+  # anonymously and its free /api/sas/v1/sign endpoint needs no account —
+  # so this route is fully scriptable. Newer NAIP is 0.3 m, delivered as COGs.
+  collection: naip
+  max_gsd: 0.6                    # accept 30-60 cm; reject coarser
+  windows_per_scene: 30           # scenes are ~2 GB -> extract crops instead
+  window_size: 1024
+  out_dir: data/raw_rgb/naip
+  aois:
+    - name: omaha_agriculture     # pairs with CORE3D Omaha
+      bbox: [-96.20, 41.20, -96.00, 41.40]
+      datetime: "2021-01-01/2024-12-31"
+      limit: 4
+    - name: iowa_cropland
+      bbox: [-93.80, 41.50, -93.60, 41.70]
+      datetime: "2021-01-01/2024-12-31"
+      limit: 4
+    - name: florida_coastal      # pairs with CORE3D Jacksonville/Tampa
+      bbox: [-81.75, 30.25, -81.55, 30.45]
+      datetime: "2021-01-01/2024-12-31"
+      limit: 4

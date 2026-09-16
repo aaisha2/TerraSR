@@ -10,7 +10,7 @@ venv/
 .vscode/
 .idea/
 
-# large data never belongs in git — lives on RESOLVE / external drive
+# large data never belongs in git — lives on external storage (Drive / workstation)
 data/
 datasets/
 *.tif
@@ -49,3 +49,8 @@ Thumbs.db
 # miscellaneous
 *.log
 *.tmp
+
+# Colab — notebook autosave checkpoints and Drive symlink targets
+colab/.ipynb_checkpoints/
+# /content/ is Colab's ephemeral VM filesystem — never a real repo path
+/content/

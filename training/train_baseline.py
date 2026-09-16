@@ -44,7 +44,8 @@ def apply_overrides(cfg: dict, overrides: list):
 def make_loader(csv_path, terrain_index, split, cfg, train):
     ds = TerraSRDataset(csv_path, terrain_index=terrain_index, split=None,
                         normalize=cfg["data"]["normalize"],
-                        augment=cfg["data"]["augment"] and train)
+                        augment=cfg["data"]["augment"] and train,
+                        pan_filter=cfg["data"].get("pan_filter", "all"))
     return DataLoader(ds, batch_size=cfg["train"]["batch_size"], shuffle=train,
                       num_workers=cfg["train"]["num_workers"], drop_last=train)
 

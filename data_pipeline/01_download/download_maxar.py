@@ -79,13 +79,22 @@ def main():
                      help="cap number of tiles downloaded per event (useful for a first smoke test)")
     ap.add_argument("--list-only", action="store_true",
                      help="list matching tiles without downloading anything")
+    ap.add_argument("--asset", default=None,
+                     help="STAC asset key to fetch; overrides the config. "
+                          "'pan_analytic' = true PAN (default, Experiment 1); "
+                          "'visual' = 3-band RGB, for the pseudo-PAN arm (Experiment 2)")
+    ap.add_argument("--out-dir", type=Path, default=None,
+                     help="override the config out_dir (keep PAN and RGB in separate trees)")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())["maxar"]
     catalog_url = cfg["catalog_url"]
-    asset_key = cfg["asset"]
-    out_dir = Path(cfg["out_dir"])
+    asset_key = args.asset or cfg["asset"]
+    out_dir = Path(args.out_dir) if args.out_dir else Path(cfg["out_dir"])
     events = args.event or cfg["events"]
+    if asset_key != "pan_analytic":
+        print(f"NOTE: asset '{asset_key}' is not true PAN — keep it out of the "
+              f"Experiment 1 (true-PAN-only) training set.")
 
     grand_total_files = 0
     for event in events:
