@@ -8,6 +8,9 @@ degraded, then mapped back to the source dtype so HR and LR share one
 radiometric scale, and written with a geotransform scaled by the SR factor so
 the LR stays correctly georeferenced.
 """
+import os
+from pathlib import Path
+
 import numpy as np
 import rasterio
 from PIL import Image
@@ -74,12 +77,21 @@ def _standard_profile(src_profile: dict, arr: np.ndarray, transform) -> dict:
     return profile
 
 
+def _tmp_for(path) -> Path:
+    path = Path(path)
+    return path.with_name(path.stem + ".partial" + path.suffix)
+
+
 def write_geotiff(path, arr: np.ndarray, src_profile: dict, transform, tags: dict):
+    """Written to a temp name and renamed when complete, so a pair file that
+    exists is always a finished one (stage 5 resume relies on this)."""
     profile = _standard_profile(src_profile, arr, transform)
-    with rasterio.open(path, "w", **profile) as dst:
+    tmp = _tmp_for(path)
+    with rasterio.open(tmp, "w", **profile) as dst:
         dst.write(arr, 1)
         if tags:
             dst.update_tags(**tags)
+    os.replace(tmp, path)
 
 
 # ---- PNG (legacy 8-bit smoke-test path) -------------------------------------
@@ -91,4 +103,6 @@ def read_png_gray_float(path) -> np.ndarray:
 
 def write_png_gray_float(arr: np.ndarray, path) -> None:
     img = Image.fromarray(np.clip(arr * 255.0, 0, 255).astype(np.uint8))
-    img.save(path)
+    tmp = _tmp_for(path)
+    img.save(tmp, format="PNG")
+    os.replace(tmp, path)

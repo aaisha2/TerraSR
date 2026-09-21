@@ -14,13 +14,22 @@ Two ways to select the HR patches:
   --hr-dir    a directory of HR images — processes every image in it
               (id = filename stem). Used for the synthetic smoke test.
 
+Resumable: the degradation manifest is saved every SAVE_EVERY pairs, and a
+re-run skips every pair whose HR and LR files already exist (outputs are
+written atomically, so an existing file is always complete). Pass --fresh to
+regenerate everything. When configs/degradation.yaml sets a `seed`, each pair
+gets its own RNG derived from (seed, patch id), so a resumed run produces the
+same pairs as an uninterrupted one.
+
 Usage:
     python make_lr_hr_pairs.py --hr-dir tests/sample_images --out-dir out/pairs
     python make_lr_hr_pairs.py --manifest out/patches/patch_manifest_labeled.json --out-dir out/pairs
 """
 import argparse
 import json
+import os
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +40,21 @@ from degradation_pipeline import degrade  # noqa: E402
 import patch_io as pio  # noqa: E402
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+SAVE_EVERY = 500
+
+
+def atomic_write_json(path: Path, obj) -> None:
+    tmp = path.with_name(path.name + ".partial")
+    tmp.write_text(json.dumps(obj, indent=2))
+    os.replace(tmp, path)
+
+
+def pair_rng(seed, out_id: str, shared_rng):
+    """Per-pair RNG when a seed is configured (resume-safe and order-
+    independent); otherwise the shared unseeded generator."""
+    if seed is None:
+        return shared_rng
+    return np.random.default_rng([int(seed), zlib.crc32(out_id.encode("utf-8"))])
 
 
 def collect_hr_items(args):
@@ -104,32 +128,57 @@ def main():
     ap.add_argument("--config", default=Path("configs/degradation.yaml"), type=Path)
     ap.add_argument("--only-labeled", action="store_true",
                      help="with --manifest: skip patches that have no terrain_label")
+    ap.add_argument("--fresh", action="store_true",
+                     help="ignore pairs from a previous run and regenerate all")
+    ap.add_argument("--verbose", action="store_true", help="print one line per pair")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(args.config.read_text())
     out_format = cfg.get("output", {}).get("format", "geotiff")
-    rng = np.random.default_rng(cfg.get("seed"))
+    seed = cfg.get("seed")
+    shared_rng = np.random.default_rng(seed)
 
     hr_out = args.out_dir / "hr"
     lr_out = args.out_dir / "lr"
     hr_out.mkdir(parents=True, exist_ok=True)
     lr_out.mkdir(parents=True, exist_ok=True)
+    manifest_path = args.out_dir / "degradation_manifest.json"
 
     process = process_geotiff if out_format == "geotiff" else process_png
 
-    manifest = []
-    for out_id, hr_src in collect_hr_items(args):
-        row = process(hr_src, out_id, hr_out, lr_out, cfg, rng)
-        manifest.append(row)
-        print(f"  {out_id}: HR {row['hr_shape']} -> LR {row['lr_shape']} "
-              f"({row['degradation_params']['downsample_method']}, {row['format']})")
+    # pairs completed by an earlier (possibly interrupted) run
+    previous = {}
+    if manifest_path.exists() and not args.fresh:
+        for r in json.loads(manifest_path.read_text()):
+            if Path(r["hr_path"]).exists() and Path(r["lr_path"]).exists():
+                previous[r["id"]] = r
 
-    if not manifest:
+    items = list(collect_hr_items(args))
+    if not items:
         raise SystemExit("no patches processed — check --manifest filters or --hr-dir contents")
 
-    manifest_path = args.out_dir / "degradation_manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    print(f"\nwrote {len(manifest)} pairs ({out_format}) -> {args.out_dir}")
+    # slot every reused pair in first, so intermediate saves keep them all
+    manifest, todo = [], []
+    for out_id, hr_src in items:
+        manifest.append(previous.get(out_id))
+        if manifest[-1] is None:
+            todo.append((len(manifest) - 1, out_id, hr_src))
+    n_reused = len(items) - len(todo)
+    if n_reused:
+        print(f"resuming: {n_reused} pairs already done, {len(todo)} to go")
+
+    for n, (slot, out_id, hr_src) in enumerate(todo, 1):
+        row = process(hr_src, out_id, hr_out, lr_out, cfg, pair_rng(seed, out_id, shared_rng))
+        manifest[slot] = row
+        if args.verbose:
+            print(f"  {out_id}: HR {row['hr_shape']} -> LR {row['lr_shape']} "
+                  f"({row['degradation_params']['downsample_method']}, {row['format']})")
+        if n % SAVE_EVERY == 0:
+            atomic_write_json(manifest_path, [r for r in manifest if r is not None])
+            print(f"  progress saved: {n_reused + n}/{len(items)} pairs", flush=True)
+
+    atomic_write_json(manifest_path, manifest)
+    print(f"\nwrote {len(todo)} new pairs, reused {n_reused} ({out_format}) -> {args.out_dir}")
     print(f"manifest -> {manifest_path}")
 
 

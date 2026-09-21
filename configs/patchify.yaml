@@ -3,6 +3,11 @@
 patch_size: 256        # HR patch, pixels (matches §3 sizing recommendation)
 stride: 256             # no overlap by default — set < patch_size to overlap
 drop_partial_edge: true  # skip incomplete grid cells at scene edges rather than pad
+inline_filter: true      # drop mostly-nodata / blank patches BEFORE writing them
+                         # (same nodata + std thresholds as `filter` below; the
+                         # saturation check still runs in patch_filter.py).
+                         # Avoids writing thousands of scene-collar patches that
+                         # would only be deleted later.
 
 filter:
   max_nodata_fraction: 0.05     # drop patch if > 5% pixels == nodata sentinel (0)

@@ -20,39 +20,33 @@ import argparse
 from pathlib import Path
 
 import rasterio
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from rasterio.vrt import WarpedVRT
+from rasterio.warp import Resampling, calculate_default_transform
 
-from _common import (cast_to_standard_dtype, is_geographic_crs,
-                      utm_epsg_for_lonlat, write_standard_geotiff)
+from _common import (STANDARD_NODATA, cast_to_standard_dtype, finalize_atomic,
+                      is_geographic_crs, row_windows, standard_profile,
+                      tmp_path_for, utm_epsg_for_lonlat)
 
 
-def reproject_to_utm(src: rasterio.DatasetReader):
-    """Reproject a geographic-CRS raster to its local UTM zone, computed
-    from the scene centroid. Returns (data, transform, dst_crs)."""
+def utm_grid(src: rasterio.DatasetReader):
+    """Output grid for reprojecting a geographic-CRS raster to its local UTM
+    zone (zone picked from the scene centroid). Returns (dst_crs, transform,
+    width, height)."""
     lon = (src.bounds.left + src.bounds.right) / 2
     lat = (src.bounds.bottom + src.bounds.top) / 2
     dst_crs = f"EPSG:{utm_epsg_for_lonlat(lon, lat)}"
-
-    dst_transform, width, height = calculate_default_transform(
+    transform, width, height = calculate_default_transform(
         src.crs, dst_crs, src.width, src.height, *src.bounds)
-
-    import numpy as np
-    dst_data = np.zeros((height, width), dtype=src.dtypes[0])
-    reproject(
-        source=rasterio.band(src, 1),
-        destination=dst_data,
-        src_transform=src.transform,
-        src_crs=src.crs,
-        dst_transform=dst_transform,
-        dst_crs=dst_crs,
-        resampling=Resampling.bilinear,
-    )
-    return dst_data, dst_transform, dst_crs
+    return dst_crs, transform, width, height
 
 
 def standardize_to_file(in_path: Path, out_path: Path) -> dict:
     """Standardize a single-band raster (CRS + dtype) and write it to out_path.
-    Reusable by the batch driver (standardize_scenes.py) and the CLI below."""
+    Reusable by the batch driver (standardize_scenes.py) and the CLI below.
+
+    Streams the scene in row strips (reprojecting through a WarpedVRT when the
+    source is geographic), so memory use is bounded no matter how large the
+    scene is. The output appears only once fully written (atomic rename)."""
     with rasterio.open(in_path) as src:
         if src.count != 1:
             raise ValueError(f"expected a single-band input (run extract_pan_band.py "
@@ -60,29 +54,41 @@ def standardize_to_file(in_path: Path, out_path: Path) -> dict:
         src_dtype = str(src.dtypes[0])
         prior_tags = src.tags()
         orig_crs = str(src.crs)
+        reprojected = is_geographic_crs(src.crs)
 
-        if is_geographic_crs(src.crs):
-            data, transform, crs = reproject_to_utm(src)
-            reprojected = True
+        if reprojected:
+            dst_crs, transform, width, height = utm_grid(src)
+            reader = WarpedVRT(src, crs=dst_crs, transform=transform,
+                               width=width, height=height,
+                               resampling=Resampling.bilinear,
+                               nodata=STANDARD_NODATA)
         else:
-            data, transform, crs = src.read(1), src.transform, src.crs
-            reprojected = False
+            reader = src
+            dst_crs, transform, width, height = src.crs, src.transform, src.width, src.height
 
-    standardized = cast_to_standard_dtype(data, src_dtype)
+        tags = dict(prior_tags)
+        tags.update({
+            "standardized": "true",
+            "orig_dtype": src_dtype,
+            "reprojected_to_utm": str(reprojected).lower(),
+            "orig_crs": orig_crs,
+        })
 
-    tags = dict(prior_tags)
-    tags.update({
-        "standardized": "true",
-        "orig_dtype": src_dtype,
-        "reprojected_to_utm": str(reprojected).lower(),
-        "orig_crs": orig_crs,
-    })
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tmp_path_for(out_path)
+        try:
+            with rasterio.open(tmp, "w", **standard_profile(width, height, transform, dst_crs)) as dst:
+                for win in row_windows(width, height):
+                    dst.write(cast_to_standard_dtype(reader.read(1, window=win), src_dtype),
+                              1, window=win)
+                dst.update_tags(**tags)
+        finally:
+            if reader is not src:
+                reader.close()
+        finalize_atomic(tmp, out_path)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_standard_geotiff(out_path, standardized, transform, crs, tags)
-
-    return {"crs": str(crs), "dtype": str(standardized.dtype),
-            "reprojected": reprojected, "shape": standardized.shape}
+    return {"crs": str(dst_crs), "dtype": "uint16",
+            "reprojected": reprojected, "shape": (height, width)}
 
 
 def main():

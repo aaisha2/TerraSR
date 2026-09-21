@@ -60,6 +60,22 @@ def get_local_worldcover_tile(lon: float, lat: float, cfg: dict) -> Path:
     return dest
 
 
+# Open WorldCover datasets, kept for the life of the process. Thousands of
+# patches share each 3x3-degree tile; opening it once instead of once per
+# patch matters most when the tile cache sits on a network mount (Google
+# Drive on Colab), where every open/stat is a round trip.
+_OPEN_TILES = {}
+
+
+def _worldcover_dataset(lon: float, lat: float, cfg: dict):
+    tile = worldcover_tile_name(lon, lat, cfg["tile_grid_deg"])
+    ds = _OPEN_TILES.get(tile)
+    if ds is None:
+        ds = rasterio.open(get_local_worldcover_tile(lon, lat, cfg))
+        _OPEN_TILES[tile] = ds
+    return ds
+
+
 def read_worldcover_window_for_patch(patch_path, cfg: dict) -> np.ndarray:
     """Read the ESA WorldCover pixels covering a patch's footprint, from a
     locally cached tile (see get_local_worldcover_tile). Returns the raw
@@ -71,12 +87,9 @@ def read_worldcover_window_for_patch(patch_path, cfg: dict) -> np.ndarray:
 
     centroid_lon = (lonlat_bounds[0] + lonlat_bounds[2]) / 2
     centroid_lat = (lonlat_bounds[1] + lonlat_bounds[3]) / 2
-    tile_path = get_local_worldcover_tile(centroid_lon, centroid_lat, cfg["worldcover_source"])
-
-    with rasterio.open(tile_path) as wc_ds:
-        window = from_bounds(*lonlat_bounds, transform=wc_ds.transform)
-        data = wc_ds.read(1, window=window)
-    return data
+    wc_ds = _worldcover_dataset(centroid_lon, centroid_lat, cfg["worldcover_source"])
+    window = from_bounds(*lonlat_bounds, transform=wc_ds.transform)
+    return wc_ds.read(1, window=window)
 
 
 def class_histogram(arr: np.ndarray) -> dict:

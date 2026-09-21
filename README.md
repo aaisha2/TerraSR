@@ -22,6 +22,13 @@ training/eval. Downloaded imagery and all intermediates live under `data/`
 (gitignored); only code and configs are versioned, so RESOLVE just pulls the
 repo and builds `data/` locally.
 
+## Google Colab
+
+No workstation? [`colab/TerraSR_Colab.ipynb`](colab/TerraSR_Colab.ipynb) runs
+the same pipeline and training on a Colab GPU — see
+[colab/README.md](colab/README.md). Data is processed on Colab's local disk
+and only checkpoints, results and a single dataset archive are kept on Drive.
+
 ## Viewing the imagery (16-bit GeoTIFFs)
 
 Stages 2–5 write 16-bit single-band GeoTIFFs, which Windows Photos can't open —
@@ -140,6 +147,33 @@ field/path texture).
 Each patch keeps its source scene's tags (`pseudo_pan`, `orig_crs`, etc.)
 plus `source_scene`/`row`/`col`/`tile_id`, which stage 6's geographic
 split depends on to keep all patches from one scene in the same split.
+
+With `inline_filter: true` (the default in `configs/patchify.yaml`),
+`tile_extractor.py` skips mostly-nodata / blank grid cells before writing
+them, using the same thresholds as `patch_filter.py` — on a full Maxar tile
+that avoids writing 965 of 1,849 cells, and the final kept set is identical.
+
+## Resuming interrupted runs
+
+Every data stage can be stopped at any point and re-run with the same
+command to continue — useful on Colab, and after a crash or power cut:
+
+| Stage | What is skipped on re-run |
+|---|---|
+| 2 standardize | scenes already converted |
+| 3 patchify | finished scenes (`<out>/_scene_manifests/`) and patches already on disk |
+| 4 WorldCover labelling | patches already labelled (progress saved every 500) |
+| 5 LR/HR pairs | pairs already written (progress saved every 500) |
+| 7–8 training | resumes from `last.pth` |
+
+All outputs are written to a temporary name and renamed when complete, so an
+interrupted write never leaves a truncated file that a resume would treat as
+finished. Each script takes `--fresh` to discard previous progress. Stage 2
+also streams scenes in row strips, so memory stays bounded for scenes of any
+size (the whole-scene reads it replaced needed 6+ GB for a SpaceNet mosaic).
+When `configs/degradation.yaml` sets a `seed`, each LR/HR pair uses its own
+RNG derived from the seed and patch id, so a resumed stage 5 produces exactly
+the same pairs as an uninterrupted run.
 
 ## Stage 4 — terrain labeling
 

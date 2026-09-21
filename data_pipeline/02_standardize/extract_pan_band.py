@@ -26,53 +26,71 @@ from pathlib import Path
 import numpy as np
 import rasterio
 
+from _common import finalize_atomic, row_windows, tmp_path_for
+
 # ITU-R BT.709 luma weights (matches sRGB-class sensors better than BT.601)
 LUMA_WEIGHTS = (0.2126, 0.7152, 0.0722)
 
+TRUE_PAN_TAGS = {"band_source": "true_pan", "pseudo_pan": "false"}
+PSEUDO_PAN_TAGS = {"band_source": "rgb_luminance_bt709", "pseudo_pan": "true"}
 
-def extract_true_pan(src: rasterio.DatasetReader, band_index: int = 1):
-    if src.count != 1 and band_index > src.count:
+
+def extract_true_pan(src: rasterio.DatasetReader, band_index: int = 1, window=None):
+    if band_index > src.count:
         raise ValueError(f"band_index={band_index} out of range for {src.count}-band source")
-    data = src.read(band_index)
-    tags = {"band_source": "true_pan", "pseudo_pan": "false", "source_band_index": str(band_index)}
+    data = src.read(band_index, window=window)
+    tags = dict(TRUE_PAN_TAGS, source_band_index=str(band_index))
     return data, tags
 
 
-def extract_pseudo_pan(src: rasterio.DatasetReader):
+def extract_pseudo_pan(src: rasterio.DatasetReader, window=None):
     if src.count < 3:
         raise ValueError(f"rgb_to_pseudo_pan needs >= 3 bands, source has {src.count}")
     src_dtype = np.dtype(src.dtypes[0])
-    rgb = src.read([1, 2, 3]).astype(np.float64)
+    rgb = src.read([1, 2, 3], window=window).astype(np.float64)
     luminance = sum(w * band for w, band in zip(LUMA_WEIGHTS, rgb))
 
     if np.issubdtype(src_dtype, np.floating):
         data = np.clip(luminance, 0.0, 1.0).astype(src_dtype)
     else:
         data = np.clip(luminance, 0, np.iinfo(src_dtype).max).astype(src_dtype)
-
-    tags = {"band_source": "rgb_luminance_bt709", "pseudo_pan": "true"}
-    return data, tags
+    return data, dict(PSEUDO_PAN_TAGS)
 
 
 def extract_pan_to_file(in_path: Path, out_path: Path, mode: str, band_index: int = 1) -> dict:
     """Extract the PAN/pseudo-PAN band from in_path and write it to out_path.
-    Reusable by the batch driver (standardize_scenes.py) and the CLI below."""
+    Reusable by the batch driver (standardize_scenes.py) and the CLI below.
+
+    Processes the scene in row strips, so memory stays bounded for scenes of
+    any size; the output appears only once complete (atomic rename)."""
     with rasterio.open(in_path) as src:
-        if mode == "true_pan":
-            data, extra_tags = extract_true_pan(src, band_index)
-        else:
-            data, extra_tags = extract_pseudo_pan(src)
+        if mode == "true_pan" and band_index > src.count:
+            raise ValueError(f"band_index={band_index} out of range for {src.count}-band source")
+        if mode != "true_pan" and src.count < 3:
+            raise ValueError(f"rgb_to_pseudo_pan needs >= 3 bands, source has {src.count}")
 
         profile = src.profile.copy()
-        profile.update(count=1, dtype=data.dtype)
+        profile.update(count=1, dtype=src.dtypes[0], tiled=True,
+                       blockxsize=512, blockysize=512, BIGTIFF="IF_SAFER")
+        profile.pop("photometric", None)   # RGB photometric is invalid for 1 band
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(out_path, "w", **profile) as dst:
-            dst.write(data, 1)
-            dst.update_tags(**extra_tags, source_file=in_path.name)
+        tmp = tmp_path_for(out_path)
+        lo, hi, tags = None, None, {}
+        with rasterio.open(tmp, "w", **profile) as dst:
+            for win in row_windows(src.width, src.height):
+                if mode == "true_pan":
+                    data, tags = extract_true_pan(src, band_index, window=win)
+                else:
+                    data, tags = extract_pseudo_pan(src, window=win)
+                dst.write(data, 1, window=win)
+                lo = data.min() if lo is None else min(lo, data.min())
+                hi = data.max() if hi is None else max(hi, data.max())
+            dst.update_tags(**tags, source_file=in_path.name)
+        finalize_atomic(tmp, out_path)
 
-    return {"shape": data.shape, "dtype": str(data.dtype),
-            "min": float(data.min()), "max": float(data.max())}
+    return {"shape": (src.height, src.width), "dtype": str(src.dtypes[0]),
+            "min": float(lo), "max": float(hi)}
 
 
 def main():

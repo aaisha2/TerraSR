@@ -13,6 +13,7 @@ Usage:
     python download_spacenet.py --config configs/datasets.yaml --aoi AOI_2_Vegas --max-files 2
 """
 import argparse
+import fnmatch
 import sys
 from pathlib import Path
 
@@ -24,13 +25,25 @@ from botocore.config import Config
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import already_downloaded, human_size  # noqa: E402
 
+# Some AOIs also ship a whole-AOI mosaic (e.g. AOI_2_Vegas_PAN_COG.tif, 4.9 GB)
+# built from the same strips. Measured: it covers 100% of a strip's footprint,
+# so downloading both would put the same ground into two different "scenes",
+# which the scene-level train/test split cannot keep apart (leakage). The
+# individual strips are kept; the mosaic is skipped by default.
+DEFAULT_EXCLUDE = ["*_PAN_COG.tif"]
 
-def list_pan_scenes(s3, bucket: str, aoi: str, band: str):
+
+def is_excluded(key: str, patterns) -> bool:
+    name = key.rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatch(name, p.lower()) for p in patterns)
+
+
+def list_pan_scenes(s3, bucket: str, aoi: str, band: str, exclude=()):
     prefix = f"AOIs/{aoi}/{band}/"
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
-            if obj["Key"].upper().endswith(".TIF"):
+            if obj["Key"].upper().endswith(".TIF") and not is_excluded(obj["Key"], exclude):
                 yield obj["Key"], obj["Size"]
 
 
@@ -68,6 +81,7 @@ def main():
     band = cfg["band"]
     out_dir = Path(cfg["out_dir"])
     aois = args.aoi or cfg["aois"]
+    exclude = cfg.get("exclude_patterns", DEFAULT_EXCLUDE)
 
     s3 = boto3.client("s3", config=Config(signature_version=UNSIGNED))
 
@@ -76,7 +90,7 @@ def main():
     for aoi in aois:
         print(f"\n=== {aoi} ({band}) ===")
         n = 0
-        for key, size in list_pan_scenes(s3, bucket, aoi, band):
+        for key, size in list_pan_scenes(s3, bucket, aoi, band, exclude):
             if args.max_files is not None and n >= args.max_files:
                 break
             n += 1

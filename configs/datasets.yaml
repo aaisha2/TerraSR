@@ -20,6 +20,10 @@ spacenet:
     - AOI_5_Khartoum       # arid/urban-fringe, bare-land-adjacent
     - AOI_7_Moscow         # urban + surrounding green space
     - AOI_8_Mumbai         # dense coastal urban
+  # Skip whole-AOI mosaics: they are built from the same strips (measured 100%
+  # footprint overlap for Vegas), so keeping both would put identical ground
+  # into two "scenes" and leak across the scene-level train/test split.
+  exclude_patterns: ["*_PAN_COG.tif"]
   out_dir: data/raw/spacenet
 
 maxar:
