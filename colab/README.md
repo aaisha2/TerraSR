@@ -1,93 +1,103 @@
 # TerraSR on Google Colab
 
-Run the full TerraSR super-resolution pipeline on a free Google Colab GPU, with Google Drive as persistent storage for the dataset, checkpoints, and results.
+Run the full TerraSR super-resolution pipeline on a Google Colab GPU. The pipeline runs on Colab's fast local disk; Google Drive holds only what must survive a runtime reset (checkpoints, results, and one dataset archive).
 
 ## Quick Start
 
 1. Open the notebook in Colab:
 
-   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/aaisha2/TerraSR/blob/main/colab/TerraSR_Colab.ipynb)
+   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/aaisha2/TerraSR/blob/master/colab/TerraSR_Colab.ipynb)
 
 2. In the Colab menu: **Runtime → Change runtime type → T4 GPU** (or better)
 
-3. Run cells top to bottom. Each section is self-contained and idempotent — you can re-run any section safely.
+3. Run cells top to bottom. Every pipeline stage resumes where it stopped, so re-running a cell after an interruption continues instead of starting over.
 
 ---
 
-## Google Drive Layout
+## Where Data Lives
 
-The notebook creates this structure in your Drive on first run:
+| Location | Contents | Why |
+|---|---|---|
+| Colab local disk — `/content/TerraSR/data/` | downloads, standardized scenes, patches, LR/HR pairs | fast for tens of thousands of small files; wiped when the runtime is recycled |
+| Google Drive — `MyDrive/TerraSR-Colab/` | checkpoints, results, WorldCover tile cache, dataset archive | persists across sessions |
 
 ```
 MyDrive/TerraSR-Colab/
-├── data/
-│   ├── raw/          ← downloaded satellite imagery
-│   ├── standardized/ ← stage 2 output
-│   ← patches/       ← stage 3/4 patches + manifests
-│   ├── pairs/        ← stage 5 LR/HR GeoTIFF pairs
-│   ├── dataset/      ← stage 6 manifests + train/val/test CSVs
-│   └── cache/        ← ESA WorldCover tile cache (~110 MB/tile)
-├── checkpoints/      ← last.pth + best.pth per model (safe across runtime resets)
-├── results/          ← evaluation outputs, PSNR/SSIM tables, .docx report
-└── logs/             ← training stdout (redirected in Section 11)
+├── checkpoints/        ← last.pth (every epoch) + best.pth per model
+├── results/            ← evaluation report (.md / .docx)
+├── cache/worldcover/   ← ESA WorldCover tiles (~110 MB each, downloaded once)
+├── dataset_archives/
+│   └── terrasr_dataset.tar   ← the finished dataset, one file (Section 6b)
+└── logs/
 ```
 
-The notebook symlinks `/content/TerraSR/data` → Drive and `/content/TerraSR/checkpoints` → Drive, so all relative paths in the research code resolve without any config changes.
+The notebook links `/content/TerraSR/checkpoints` and `/content/TerraSR/data/cache` to Drive, so all relative paths in the research code resolve without config changes.
+
+### Why the dataset is not kept on Drive
+
+Earlier versions of this notebook stored every intermediate file on Drive. Patchify writes one GeoTIFF per 256×256 patch — the default subset alone is ~20,000–28,000 files — and writing that many small files one by one through the Drive mount took hours and led to disconnects. Local disk handles it in minutes. The finished dataset is then saved to Drive as **one archive**, which copies quickly and is restored in one step.
 
 ---
 
-## Four-Phase Workflow
+## Workflow
 
-### Phase 1 — Infrastructure test (Sections 0–8, ~30 min)
-- GPU check, Drive mount, repo clone, environment install
-- Download a tiny subset (3 Vegas scenes + 2 Maxar tiles)
-- Run stages 2–6 to build a small dataset
-- Run one batch forward/backward to confirm GPU works end-to-end
+### First session — build the dataset
+1. **Sections 0–4:** GPU check, Drive mount, clone + install, data paths, import check
+2. **Section 4b:** reports that there is nothing to restore yet
+3. **Section 5:** download a subset to local disk (scenes left on Drive by an earlier notebook version are reused, not re-downloaded)
+4. **Section 6:** pipeline stages 2–6 (resumable)
+5. **Section 6b:** save the dataset archive to Drive
 
-### Phase 2 — Smoke training (Section 9, ~15 min)
-- 5 epochs, batch_size=4, perceptual loss disabled
-- Confirms: loss decreases, checkpoints appear on Drive, resume works
+### Later sessions — skip the pipeline
+1. **Sections 0–4**
+2. **Section 4b:** restores the dataset archive from Drive to local disk
+3. Continue at **Section 7** (verify) or **Section 11** (training)
 
-### Phase 3 — Scaled experiment (Sections 10–11)
-- Increase AOIs/events in Section 5 and re-run stages 2–6
-- Run full 100-epoch training for all four models overnight
-- Checkpoints are safe on Drive even if the Colab runtime terminates
-
-### Phase 4 — Evaluation (Section 12)
-- PSNR/SSIM table, per-terrain breakdown, `.docx` report
-- Download results to local machine (Section 13)
+### Training and evaluation
+- **Sections 8–10:** single-batch test, 5-epoch smoke run, resume test
+- **Section 11:** full training of all four models (SRCNN, SRGAN, SwinIR, TerraSR)
+- **Section 12:** evaluation — report written to `MyDrive/TerraSR-Colab/results/`
+- **Section 13:** download the report
 
 ---
 
-## Resuming After a Runtime Reset
+## Resuming After a Disconnect
 
-Colab free runtimes disconnect after ~12 hours or on inactivity. To resume:
+Colab disconnects idle browser tabs and caps session length (limits vary by tier and change over time). Everything is built to resume:
 
-1. Reconnect and open the notebook
-2. Re-run **Sections 0–4** (GPU check → imports; fast, < 2 min)
-3. Skip to **Section 11** — training auto-resumes from `last.pth` on Drive
+| Interrupted during | What to do |
+|---|---|
+| Section 6 (pipeline), runtime still alive | Re-run Sections 0–4, then the stage cell that was running. It continues from where it stopped. |
+| Section 6, runtime recycled (local disk empty) | Re-run Sections 0–6. Scenes re-download from AWS; nothing half-finished is ever reused because every file is written atomically. |
+| Section 11 (training) | Re-run Sections 0–4, **Section 4b** (restore dataset), then Section 11. Each model resumes from its last completed epoch; finished models are skipped. |
 
-The checkpoint resume logic is built into `train_terrasr.py` and `train_baseline.py` — they detect `last.pth` and continue from the next epoch automatically.
+How each stage resumes:
+- **standardize** skips scenes already converted
+- **patchify** skips finished scenes (recorded in `data/patches/_scene_manifests/`) and patches already on disk
+- **WorldCover labelling** and **LR/HR pair generation** save progress every 500 patches and skip finished ones
+- **training** reloads `last.pth` (model, optimizer, epoch, RNG state) from Drive
+
+Pass `--fresh` to any of these scripts to ignore previous progress.
 
 ---
 
 ## Scaling Up the Dataset
 
-To add more data, edit the download cell in **Section 5**:
+Edit the download cell in **Section 5**:
 
 ```python
-# SpaceNet — add more AOIs:
 SPACENET_AOIS  = ["AOI_2_Vegas", "AOI_5_Khartoum", "AOI_3_Paris"]
-SPACENET_MAX_FILES = None   # None = download everything
+SPACENET_MAX_FILES = None   # None = every scene in the AOI
 
-# Maxar — add more events:
 MAXAR_EVENTS   = ["Brazil-Flooding-May24", "Belize-Wildfires-June24"]
 MAXAR_MAX_FILES = None
 ```
 
-Then re-run Sections 5–6 (the pipeline scripts are idempotent — already-downloaded files are skipped).
+Then re-run Sections 5, 6 and 6b. Already-processed files are skipped.
 
-> **Storage note:** The full dataset is ~300–400 GB. With Google AI Pro (5 TB Drive), storage is not the bottleneck. Colab's local VM disk (~200 GB) fills up faster — keep the Drive symlinks in place so data lands on Drive, not the VM.
+**Size guide:** each SpaceNet PAN scene is 16384×16384 px (~537 MB) and yields about 4,000 patches. Colab's local disk is smaller than a workstation's (check the free space Section 3 prints) — a few AOIs fit comfortably; the full 300–400 GB research dataset does not. For Colab, tens of thousands of patches is a solid training set.
+
+Whole-AOI mosaic files (e.g. `AOI_2_Vegas_PAN_COG.tif`) are skipped automatically: they are built from the same scenes as the individual strips, so downloading both would put identical ground into the training and test sets.
 
 ---
 
@@ -99,18 +109,10 @@ Then re-run Sections 5–6 (the pipeline scripts are idempotent — already-down
 | L4 (22 GB) | 12–16 |
 | A100 (40 GB) | 16 |
 
-The notebook defaults to `batch_size=8`. To use 16, edit the override in Section 11.
+Section 11 picks a batch size from the detected VRAM; edit `BATCH_SIZE` there if you hit out-of-memory errors.
 
 ---
 
 ## Relationship to the Research Codebase
 
-This notebook is a **thin orchestration layer** over the unchanged research code. It does not modify:
-
-- Any model (`terrasr_swinir.py`, `swinir_baseline.py`, etc.)
-- Any training script (`train_terrasr.py`, `train_baseline.py`)
-- Any config (`train_terrasr.yaml`, `terrain_aware_loss.yaml`, etc.)
-- The data pipeline (stages 1–6)
-- The evaluation scripts
-
-If you regain access to the RESOLVE workstation, the research code runs there identically — nothing in `colab/` is required for that.
+The notebook is a thin orchestration layer over the research code. Models, training scripts, configs and evaluation are shared unchanged; the data pipeline scripts it calls are the same ones used on the RESOLVE workstation, and their resume support works identically there. Nothing in `colab/` is needed to run on a workstation.
