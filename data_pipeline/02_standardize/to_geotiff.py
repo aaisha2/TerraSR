@@ -19,13 +19,13 @@ Usage:
 import argparse
 from pathlib import Path
 
+import numpy as np
 import rasterio
-from rasterio.vrt import WarpedVRT
-from rasterio.warp import Resampling, calculate_default_transform
+from rasterio.warp import Resampling, calculate_default_transform, reproject
 
-from _common import (STANDARD_NODATA, cast_to_standard_dtype, finalize_atomic,
-                      is_geographic_crs, row_windows, standard_profile,
-                      tmp_path_for, utm_epsg_for_lonlat)
+from _common import (STANDARD_DTYPE, STANDARD_NODATA, cast_to_standard_dtype,
+                      finalize_atomic, is_geographic_crs, row_windows,
+                      standard_profile, tmp_path_for, utm_epsg_for_lonlat)
 
 
 def utm_grid(src: rasterio.DatasetReader):
@@ -44,9 +44,18 @@ def standardize_to_file(in_path: Path, out_path: Path) -> dict:
     """Standardize a single-band raster (CRS + dtype) and write it to out_path.
     Reusable by the batch driver (standardize_scenes.py) and the CLI below.
 
-    Streams the scene in row strips (reprojecting through a WarpedVRT when the
-    source is geographic), so memory use is bounded no matter how large the
-    scene is. The output appears only once fully written (atomic rename)."""
+    Memory use is bounded no matter how large the scene is, and the output is
+    bit-identical to the previous whole-scene implementation:
+      - already-projected sources are copied one row strip at a time;
+      - uint16 sources (all true PAN) are reprojected straight into the output
+        file in a single warp, which GDAL chunks internally;
+      - other dtypes need a scaling cast (see cast_to_standard_dtype), which a
+        band-to-band warp cannot express, so they take the original
+        whole-array path. Those are the small RGB pseudo-PAN sources.
+    Note the warp must run as ONE operation over the full output grid: GDAL
+    fits its coordinate-transformer approximation to the destination extent,
+    so warping strip by strip shifts sampling and changes pixel values.
+    The output appears only once fully written (atomic rename)."""
     with rasterio.open(in_path) as src:
         if src.count != 1:
             raise ValueError(f"expected a single-band input (run extract_pan_band.py "
@@ -58,12 +67,7 @@ def standardize_to_file(in_path: Path, out_path: Path) -> dict:
 
         if reprojected:
             dst_crs, transform, width, height = utm_grid(src)
-            reader = WarpedVRT(src, crs=dst_crs, transform=transform,
-                               width=width, height=height,
-                               resampling=Resampling.bilinear,
-                               nodata=STANDARD_NODATA)
         else:
-            reader = src
             dst_crs, transform, width, height = src.crs, src.transform, src.width, src.height
 
         tags = dict(prior_tags)
@@ -76,15 +80,38 @@ def standardize_to_file(in_path: Path, out_path: Path) -> dict:
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         tmp = tmp_path_for(out_path)
-        try:
-            with rasterio.open(tmp, "w", **standard_profile(width, height, transform, dst_crs)) as dst:
+        profile = standard_profile(width, height, transform, dst_crs)
+        # No nodata while warping: with a nodata value declared, GDAL shifts
+        # valid pixels that land on it (a 0-valued nodata collar came out as 1,
+        # which silently defeated the nodata checks in stage 3). New GeoTIFF
+        # blocks are zero-filled, so uncovered areas are 0 either way; the
+        # nodata tag is set once the pixels are written.
+        warp_profile = {k: v for k, v in profile.items() if k != "nodata"}
+
+        with rasterio.open(tmp, "w", **warp_profile) as dst:
+            if not reprojected:
                 for win in row_windows(width, height):
-                    dst.write(cast_to_standard_dtype(reader.read(1, window=win), src_dtype),
+                    dst.write(cast_to_standard_dtype(src.read(1, window=win), src_dtype),
                               1, window=win)
-                dst.update_tags(**tags)
-        finally:
-            if reader is not src:
-                reader.close()
+            elif src_dtype == STANDARD_DTYPE:
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=rasterio.band(dst, 1),   # GDAL chunks this itself
+                    src_transform=src.transform, src_crs=src.crs,
+                    dst_transform=transform, dst_crs=dst_crs,
+                    resampling=Resampling.bilinear,
+                )
+            else:
+                data = np.zeros((height, width), dtype=src_dtype)
+                reproject(
+                    source=rasterio.band(src, 1), destination=data,
+                    src_transform=src.transform, src_crs=src.crs,
+                    dst_transform=transform, dst_crs=dst_crs,
+                    resampling=Resampling.bilinear,
+                )
+                dst.write(cast_to_standard_dtype(data, src_dtype), 1)
+            dst.nodata = STANDARD_NODATA
+            dst.update_tags(**tags)
         finalize_atomic(tmp, out_path)
 
     return {"crs": str(dst_crs), "dtype": "uint16",
