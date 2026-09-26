@@ -17,6 +17,7 @@ RESOLVE-scale download. It is deliberately isolated from the production run:
     python test_pipeline_ucmerced/run_test_pipeline.py --no-training   # data build only
 """
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -38,8 +39,11 @@ LABELED = f"{PATCHES}/patch_manifest_labeled.json"
 
 def run(cmd):
     printable = " ".join(str(c) for c in cmd)
-    print(f"\n$ {printable}")
-    r = subprocess.run([str(c) for c in cmd], cwd=str(REPO_ROOT))
+    print(f"\n$ {printable}", flush=True)
+    # PYTHONUNBUFFERED so per-epoch training lines show up live even when the
+    # output of this script is piped to a file.
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    r = subprocess.run([str(c) for c in cmd], cwd=str(REPO_ROOT), env=env)
     if r.returncode != 0:
         raise SystemExit(f"step failed (exit {r.returncode}): {printable}")
 

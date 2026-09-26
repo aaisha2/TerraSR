@@ -30,6 +30,7 @@ train:
   num_workers: 4
   seed: 42
   val_every: 1           # epochs
+  log_every: 50          # print a progress line every N batches within an epoch
   out_dir: checkpoints/swinir_baseline
 
 # SRGAN-only: when model.name == srgan, also train adversarially if true

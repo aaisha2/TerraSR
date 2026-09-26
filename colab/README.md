@@ -56,8 +56,36 @@ Earlier versions of this notebook stored every intermediate file on Drive. Patch
 ### Training and evaluation
 - **Sections 8–10:** single-batch test, 5-epoch smoke run, resume test
 - **Section 11:** full training of all four models (SRCNN, SRGAN, SwinIR, TerraSR)
+- **Section 11b:** training status — epochs done, resume point, best PSNR per model
 - **Section 12:** evaluation — report written to `MyDrive/TerraSR-Colab/results/`
 - **Section 13:** download the report
+
+---
+
+## Seeing Training Progress
+
+Training cells stream their output as it happens, so you can watch where the run is:
+
+```
+RESUMING   : 12/100 epochs already done (12%) - continuing at epoch 13
+best so far: val PSNR 31.84 dB
+to train   : 88 more epoch(s)
+==============================================================
+[02:14:07] epoch 13/100 started (3020 batches)
+[02:15:11]   epoch 13/100  batch 50/3020 (  2%)  loss 0.0231  0.78 it/s  epoch ETA 63m22s
+[02:31:40] epoch  13/100 done  loss 0.0198  val PSNR 31.91 dB  <- best, best.pth updated  (17m33s)  |  87 epoch(s) left, ETA 25h27m
+```
+
+Each line carries a wall-clock timestamp, the epoch and batch position, and an ETA for both the epoch and the rest of the run. `train.log_every` in the training configs sets how often the batch lines appear (default: every 50 batches).
+
+Colab discards a cell's output when the browser tab disconnects, so every completed epoch is also appended to **`checkpoints/<model>/training_log.csv`** on Drive. To read progress back:
+
+- **Section 11b** in the notebook, or
+- `python training/training_status.py --dir checkpoints --tail 10`
+
+It reports, per model, epochs completed, the epoch the next run will resume at, the best validation PSNR and when it was reached. It loads no model and touches no GPU, so it can also be run from a second notebook against the same Drive folder while training is still going.
+
+> Earlier versions launched the trainers with `subprocess.run`, which buffers the child's stdout until the process exits — hours of training looked like a hung cell. The notebook now uses `colab/colab_utils.py::stream_run` instead.
 
 ---
 
@@ -69,7 +97,7 @@ Colab disconnects idle browser tabs and caps session length (limits vary by tier
 |---|---|
 | Section 6 (pipeline), runtime still alive | Re-run Sections 0–4, then the stage cell that was running. It continues from where it stopped. |
 | Section 6, runtime recycled (local disk empty) | Re-run Sections 0–6. Scenes re-download from AWS; nothing half-finished is ever reused because every file is written atomically. |
-| Section 11 (training) | Re-run Sections 0–4, **Section 4b** (restore dataset), then Section 11. Each model resumes from its last completed epoch; finished models are skipped. |
+| Section 11 (training) | Re-run Sections 0–4, **Section 4b** (restore dataset), then Section 11. Each model resumes from its last completed epoch; finished models are skipped. Run **Section 11b** first to see exactly how far each model got. |
 
 How each stage resumes:
 - **standardize** skips scenes already converted

@@ -31,4 +31,5 @@ train:
   num_workers: 0
   seed: 42
   val_every: 1
+  log_every: 50          # print a progress line every N batches within an epoch
   out_dir: test_pipeline_ucmerced/checkpoints/terrasr

@@ -16,6 +16,7 @@ Stages 7-9 (baselines, TerraSR, evaluation) are heavy and GPU-bound; they run
 only with --with-training. See RESOLVE.md for the full runbook.
 """
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -29,10 +30,13 @@ STAGE_ORDER = ["download", "standardize", "patchify", "filter", "label",
 
 def run(cmd, dry=False):
     printable = " ".join(str(c) for c in cmd)
-    print(f"\n$ {printable}")
+    print(f"\n$ {printable}", flush=True)
     if dry:
         return
-    result = subprocess.run([str(c) for c in cmd])
+    # PYTHONUNBUFFERED: child progress (training epochs above all) must appear
+    # while it happens, not in one dump at exit when this run is piped to a log.
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
+    result = subprocess.run([str(c) for c in cmd], env=env)
     if result.returncode != 0:
         raise SystemExit(f"stage failed (exit {result.returncode}): {printable}")
 

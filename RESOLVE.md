@@ -160,10 +160,26 @@ Training auto-uses the GPU when `torch.cuda.is_available()`. Tune
 epoch + RNG) atomically, and `best.pth` is overwritten only when validation
 PSNR improves. If training stops — crash, power loss, or you hit Ctrl-C — just
 re-run the exact same command: it detects `last.pth` and resumes from the next
-epoch (`resuming from epoch N …`), so you never lose completed epochs even if
-the last one wasn't a new best. Add `--fresh` to ignore an existing `last.pth`
-and start over. Checkpoints are written to a temp file then atomically renamed,
-so a power loss mid-write can't corrupt an existing checkpoint.
+epoch — the startup banner reports how many epochs were already done, where it
+is continuing from and the best PSNR so far — so you never lose completed epochs
+even if the last one wasn't a new best. Add `--fresh` to ignore an existing
+`last.pth` and start over. Checkpoints are written to a temp file then atomically
+renamed, so a power loss mid-write can't corrupt an existing checkpoint.
+
+**Progress.** Each epoch prints a timestamped line with the loss, validation
+PSNR, epoch duration and an ETA for the remaining epochs; within an epoch a
+batch line appears every `train.log_every` batches (default 50) with an it/s
+rate and epoch ETA, so a long epoch visibly moves. Every completed epoch is also
+appended to `<out_dir>/training_log.csv`. To see how far a run got without
+re-reading scrollback:
+
+```bash
+python training/training_status.py --dir checkpoints --tail 10
+```
+
+That reports per model: epochs completed, the epoch a resume would start at,
+best validation PSNR and the most recent epoch lines. It builds no model and
+uses no GPU, so it is safe to run while training is in progress.
 
 ---
 

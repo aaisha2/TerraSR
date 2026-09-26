@@ -164,7 +164,7 @@ command to continue — useful on Colab, and after a crash or power cut:
 | 3 patchify | finished scenes (`<out>/_scene_manifests/`) and patches already on disk |
 | 4 WorldCover labelling | patches already labelled (progress saved every 500) |
 | 5 LR/HR pairs | pairs already written (progress saved every 500) |
-| 7–8 training | resumes from `last.pth` |
+| 7–8 training | resumes from `last.pth` (the startup banner reports from where) |
 
 All outputs are written to a temporary name and renamed when complete, so an
 interrupted write never leaves a truncated file that a resume would treat as
@@ -325,6 +325,16 @@ train (loss decreasing), validate (per-epoch PSNR), and save/reload
 checkpoints. **The PSNR numbers from those runs are meaningless** (16 patches,
 2–3 epochs) — they only prove the machinery; real training runs on the
 RESOLVE GPU with the full dataset.
+
+Both trainers report progress the same way: a startup banner (model, data,
+where it is resuming from, how much is left), a timestamped batch line every
+`train.log_every` batches with an it/s rate and epoch ETA, and a per-epoch line
+with loss, validation PSNR and a run ETA. Each completed epoch is appended to
+`<out_dir>/training_log.csv`, so progress survives a lost console:
+
+```bash
+python training/training_status.py --dir checkpoints --tail 10
+```
 
 ## Stage 6 — package + split
 
