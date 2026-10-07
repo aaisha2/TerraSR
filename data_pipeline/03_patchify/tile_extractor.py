@@ -39,10 +39,30 @@ from pathlib import Path
 import numpy as np
 import rasterio
 import yaml
+from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import grid_windows  # noqa: E402
+
+
+def patch_geo(src: rasterio.DatasetReader, window: Window) -> dict:
+    """The patch's footprint in WGS84, as plain numbers for the manifest.
+
+    Recorded here rather than re-derived later because it is free while the
+    scene is already open, and because stage 6b cannot prevent same-location
+    leakage without it. Returns empty values for a scene with no CRS (the
+    UC Merced test fixtures), which callers must handle rather than assume
+    geography exists."""
+    if src.crs is None:
+        return {"center_lon": None, "center_lat": None, "bounds_wgs84": None}
+    bounds = rasterio.windows.bounds(window, src.transform)
+    try:
+        left, bottom, right, top = transform_bounds(src.crs, "EPSG:4326", *bounds)
+    except Exception:
+        return {"center_lon": None, "center_lat": None, "bounds_wgs84": None}
+    return {"center_lon": (left + right) / 2, "center_lat": (bottom + top) / 2,
+            "bounds_wgs84": [left, bottom, right, top]}
 
 SCENE_MANIFEST_DIR = "_scene_manifests"
 NODATA_VALUE = 0          # stage 2 writes nodata=0 (STANDARD_NODATA)
@@ -104,15 +124,22 @@ def extract_patches(scene_path: Path, out_dir: Path, settings: dict, fresh: bool
         for i, (row, col, row_off, col_off) in enumerate(cells, 1):
             tile_id = f"{source_stem}_r{row:04d}_c{col:04d}"
             patch_path = out_dir / f"{tile_id}.tif"
+            window = Window(col_off, row_off, ps, ps)
             record = {"tile_id": tile_id, "patch_path": str(patch_path),
                       "source_scene": scene_path.name, "row": row, "col": col,
                       "row_off": row_off, "col_off": col_off}
+            # WHERE ON THE GROUND this patch is. Stage 6b needs it to split by
+            # location instead of by scene name: several sources cover the same
+            # ground under different scene names (repeat CORE3D collects of one
+            # site, Maxar pre/post-event acquisitions, the pan and visual assets
+            # of a single Maxar scene, overlapping SpaceNet strips), and a
+            # scene-name split puts the same buildings in train and test.
+            record.update(patch_geo(src, window))
 
             if patch_path.exists() and not fresh:
                 rows.append(record)
                 n_existing += 1
             else:
-                window = Window(col_off, row_off, ps, ps)
                 data = src.read(1, window=window)
                 if not keep_patch(data, settings):
                     n_dropped += 1

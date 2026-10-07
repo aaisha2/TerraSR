@@ -1,16 +1,46 @@
 # Stage 6 packaging + split config — see docs/plan §3 (sizing) and §6.
 
 split:
-  # Geographic-BLOCK split: whole source scenes are assigned to one split,
-  # never divided across sets. Adjacent patches from the same scene are
-  # near-duplicates, so a random per-patch split would leak train content
-  # into val/test and inflate PSNR/SSIM. (docs/plan §3)
+  # GEOGRAPHIC-BLOCK split: whole blocks of GROUND are assigned to one split.
+  #
+  # This used to be a scene-level split (`group_by: source_scene`), which stops
+  # adjacent-patch leakage inside a scene but not same-location leakage between
+  # scenes — and several of this project's sources cover the same ground under
+  # different scene names:
+  #   - CORE3D: ~154 scenes over 5 sites, i.e. tens of repeat WorldView collects
+  #     of the same city. A scene split puts the same buildings, from another
+  #     pass, in train and test.
+  #   - Maxar Open Data: pre-event and post-event acquisitions of one quadkey.
+  #   - maxar_visual (Experiment 2 pseudo-PAN): the SAME scenes as maxar, just
+  #     the `visual` asset instead of `pan_analytic`.
+  #   - SpaceNet: strips within an AOI overlap at the edges.
+  # Patch centroids are therefore quantised to a grid and blocks are the atomic
+  # unit. Run audit_split_leakage.py after splitting to verify it.
   ratios:
     train: 0.8
     val: 0.1
     test: 0.1
-  group_by: source_scene   # the geographic block unit
-  seed: 42                  # reproducible scene->split assignment
+
+  # spatial | scene | auto
+  #   spatial  block split; fails if the manifest has no patch geography
+  #   scene    the old scene-name split (does NOT prevent same-location leakage)
+  #   auto     spatial when every patch has a centroid, else scene with a warning
+  mode: auto
+
+  # Block edge length. A 256 px patch at 0.3 m is ~77 m across, so a 1 km block
+  # holds a few hundred patches: small enough to spread many blocks across the
+  # splits, large enough that train and test ground are properly separated.
+  block_size_km: 1.0
+
+  # Patches within this distance of a block assigned to a DIFFERENT split are
+  # dropped from every split (split='excluded_buffer'). Without it, two patches
+  # a few metres apart either side of a block seam land in different splits and
+  # leak. ~3 patch widths.
+  buffer_m: 250
+
+  # Only used when mode resolves to `scene`.
+  group_by: source_scene
+  seed: 42                  # reproducible block->split assignment
 
 stats:
   # per-class patch floor from the sizing plan — dataset_stats.py flags any

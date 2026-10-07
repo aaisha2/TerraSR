@@ -95,3 +95,145 @@ def read_worldcover_window_for_patch(patch_path, cfg: dict) -> np.ndarray:
 def class_histogram(arr: np.ndarray) -> dict:
     values, counts = np.unique(arr, return_counts=True)
     return {int(v): int(c) for v, c in zip(values, counts)}
+
+
+# --------------------------------------------------------------------------
+# Copernicus DEM - the Mountain class
+# --------------------------------------------------------------------------
+# ESA WorldCover is a land-COVER product with no landform classes, so Mountain
+# was previously reachable only through `scene_terrain_overrides` - a hand-kept
+# dict of scene-name substrings that was empty, i.e. the class could never be
+# assigned at all. Terrain index 4 (Mountain) therefore had an embedding row
+# and a per-terrain loss weight that no training sample ever touched.
+#
+# Mountain is a property of the ground's shape, so it comes from a DEM.
+# Copernicus DEM GLO-30 is public and anonymous over HTTPS (verified
+# 2026-10-07: 1-degree COG tiles, ~39 MB each), and is cached locally exactly
+# like the WorldCover tiles.
+DEM_TILE_TEMPLATE = "Copernicus_DSM_COG_10_{ns}{lat:02d}_00_{ew}{lon:03d}_00_DEM"
+DEM_BASE_URL = "https://copernicus-dem-30m.s3.amazonaws.com"
+METRES_PER_DEGREE = 111320.0
+
+
+def dem_tile_name(lon: float, lat: float) -> str:
+    """GLO-30 tiles are 1x1 degree, named by their SW corner."""
+    lat_floor, lon_floor = int(math.floor(lat)), int(math.floor(lon))
+    ns = "N" if lat_floor >= 0 else "S"
+    ew = "E" if lon_floor >= 0 else "W"
+    return DEM_TILE_TEMPLATE.format(ns=ns, lat=abs(lat_floor),
+                                     ew=ew, lon=abs(lon_floor))
+
+
+def get_local_dem_tile(lon: float, lat: float, cfg: dict) -> Path:
+    """Local path to the DEM tile covering (lon, lat), downloaded once.
+
+    Raises FileNotFoundError for a tile the dataset does not publish (GLO-30
+    has no tiles over open ocean), so callers can treat 'no DEM here' as a
+    normal outcome rather than a failure."""
+    tile = dem_tile_name(lon, lat)
+    cache_dir = Path(cfg.get("cache_dir", "data/cache/copernicus_dem"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dest = cache_dir / f"{tile}.tif"
+    missing_marker = cache_dir / f"{tile}.missing"
+
+    if dest.exists():
+        return dest
+    if missing_marker.exists():
+        raise FileNotFoundError(f"DEM tile {tile} is not published (cached result)")
+
+    base = cfg.get("base_url", DEM_BASE_URL)
+    url = f"{base}/{tile}/{tile}.tif"
+    tmp = dest.with_suffix(".tif.part")
+    with requests.get(url, stream=True, timeout=180) as r:
+        if r.status_code in (403, 404):
+            # remember it, so a coastal dataset doesn't re-request every patch
+            missing_marker.write_text(f"{r.status_code} {url}\n")
+            raise FileNotFoundError(f"DEM tile {tile} is not published ({r.status_code})")
+        r.raise_for_status()
+        with open(tmp, "wb") as f:
+            for chunk in r.iter_content(chunk_size=1 << 20):
+                f.write(chunk)
+    tmp.replace(dest)
+    return dest
+
+
+_OPEN_DEM_TILES = {}
+
+
+def _dem_dataset(lon: float, lat: float, cfg: dict):
+    tile = dem_tile_name(lon, lat)
+    if tile not in _OPEN_DEM_TILES:          # None caches "not published"
+        try:
+            _OPEN_DEM_TILES[tile] = rasterio.open(get_local_dem_tile(lon, lat, cfg))
+        except FileNotFoundError:
+            _OPEN_DEM_TILES[tile] = None
+    ds = _OPEN_DEM_TILES[tile]
+    if ds is None:
+        raise FileNotFoundError(f"no DEM tile for lon={lon:.4f} lat={lat:.4f}")
+    return ds
+
+
+def patch_lonlat_bounds(patch_path):
+    """A patch's footprint in WGS84 (left, bottom, right, top)."""
+    with rasterio.open(patch_path) as ds:
+        return transform_bounds(ds.crs, "EPSG:4326", *ds.bounds)
+
+
+def slope_stats(dem: np.ndarray, lat: float, dx_deg: float, dy_deg: float,
+                 nodata=None) -> dict:
+    """Slope and relief statistics for a DEM window.
+
+    Spacing is converted from degrees to metres using the window's own
+    transform (GLO-30 coarsens its longitude spacing above 50 degrees
+    latitude, so this cannot be hard-coded) and cos(lat) for the longitude
+    convergence. Slope is the gradient magnitude in degrees."""
+    dem = np.asarray(dem, dtype=np.float64)
+    if nodata is not None:
+        dem = np.where(dem == nodata, np.nan, dem)
+    if dem.size < 4 or np.all(np.isnan(dem)):
+        return {"valid": False}
+
+    dx_m = abs(dx_deg) * METRES_PER_DEGREE * max(math.cos(math.radians(lat)), 1e-6)
+    dy_m = abs(dy_deg) * METRES_PER_DEGREE
+    if dem.shape[0] < 2 or dem.shape[1] < 2 or dx_m <= 0 or dy_m <= 0:
+        return {"valid": False}
+
+    gy, gx = np.gradient(dem, dy_m, dx_m)
+    slope_deg = np.degrees(np.arctan(np.hypot(gx, gy)))
+    finite = slope_deg[np.isfinite(slope_deg)]
+    elev = dem[np.isfinite(dem)]
+    if finite.size == 0 or elev.size == 0:
+        return {"valid": False}
+    return {
+        "valid": True,
+        "slope_mean_deg": float(np.mean(finite)),
+        "slope_p90_deg": float(np.percentile(finite, 90)),
+        # local relief: the elevation span across the patch, the other standard
+        # mountain criterion (a steep cliff face and a rolling hill differ here)
+        "relief_m": float(np.percentile(elev, 95) - np.percentile(elev, 5)),
+        "elevation_mean_m": float(np.mean(elev)),
+        "dem_pixels": int(finite.size),
+    }
+
+
+def read_dem_stats_for_patch(patch_path, cfg: dict) -> dict:
+    """Slope/relief statistics over a patch's footprint, from the cached
+    Copernicus DEM. A patch is typically much smaller than one 30 m DEM
+    pixel's neighbourhood, so the window is padded to at least `min_window`
+    pixels - slope is a property of the surrounding landform, not of the
+    77 m patch alone."""
+    left, bottom, right, top = patch_lonlat_bounds(patch_path)
+    lon = (left + right) / 2
+    lat = (bottom + top) / 2
+    ds = _dem_dataset(lon, lat, cfg)
+
+    min_window = int(cfg.get("min_window_px", 11))
+    half_deg_x = max((right - left) / 2, abs(ds.transform.a) * min_window / 2)
+    half_deg_y = max((top - bottom) / 2, abs(ds.transform.e) * min_window / 2)
+    window = from_bounds(lon - half_deg_x, lat - half_deg_y,
+                          lon + half_deg_x, lat + half_deg_y,
+                          transform=ds.transform)
+    dem = ds.read(1, window=window, boundless=True, fill_value=np.nan)
+    stats = slope_stats(dem, lat, ds.transform.a, ds.transform.e, nodata=ds.nodata)
+    stats["dem_tile"] = dem_tile_name(lon, lat)
+    return stats

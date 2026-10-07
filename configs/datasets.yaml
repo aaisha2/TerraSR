@@ -6,6 +6,35 @@
 # no cap. `--list-only` previews the total size first. To scale the dataset up
 # or down, add/remove AOIs (spacenet.aois) and events (maxar.events) here.
 # The `--max-files` CLI flag exists only for laptop smoke tests.
+#
+# ---------------------------------------------------------------------------
+# SOURCES THAT COVER THE SAME GROUND  (read before changing the split)
+# ---------------------------------------------------------------------------
+# Several sources here image the same ground under different scene names. That
+# is deliberate and useful — but it means a split keyed on scene name puts the
+# same ground in train and test, which inflates test PSNR/SSIM because the
+# model has already seen those pixels. Measured on a reproduction of these four
+# routes: a scene-name split leaked 33% of both val and test, with a nearest
+# train-patch distance of 0 m.
+#
+#   1. core3d: ~154 scenes over 5 sites, i.e. tens of repeat WorldView collects
+#      of the same city on different dates.
+#   2. maxar events: pre-event and post-event acquisitions of the same quadkeys.
+#   3. maxar_visual: the SAME scenes as `maxar`, just the `visual` asset instead
+#      of `pan_analytic` (see its note below).
+#   4. naip_pc: its AOIs are chosen to overlap the CORE3D sites on purpose, so
+#      Experiment 2's pseudo-PAN covers Experiment 1's true-PAN ground.
+#   5. spacenet: strips within one AOI overlap at the edges.
+#
+# Two consequences for the workflow:
+#   - stage 6b splits by GEOGRAPHIC BLOCK (configs/split.yaml), not scene name,
+#     so repeat coverage of one location always lands in one split. Verify with
+#     data_pipeline/06_package/audit_split_leakage.py, which fails on any
+#     held-out patch that overlaps training ground.
+#   - build and split ONE manifest containing every source. If true-PAN and
+#     pseudo-PAN are split separately, the block assignment is independent and
+#     the leakage comes straight back. Experiment 1 vs 2 is selected at
+#     training time with `data.pan_filter`, never by splitting twice.
 
 spacenet:
   bucket: spacenet-dataset          # public, anonymous/unsigned S3 access
@@ -69,6 +98,16 @@ maxar_visual:
   # asset instead of `pan_analytic`. Cheapest possible pseudo-PAN source: same
   # scenes, same resolution, same licence — so a PAN-vs-pseudo-PAN comparison
   # is not confounded by a change of sensor or geography.
+  #
+  # BY CONSTRUCTION THIS IS THE SAME GROUND AS `maxar`. Every patch here has a
+  # true-PAN twin covering identical pixels under a different scene name. The
+  # geographic-block split keeps both in the same split; a scene-name split
+  # would have put the PAN version in train and the visual version in test.
+  # It also means Experiment 2 is not "more data" in the sense of more ground —
+  # it is the same ground imaged a second way, which is what the experiment is
+  # for, and should be described that way in the write-up rather than as a
+  # dataset-size increase.
+  same_ground_as: maxar
   # Run:  python data_pipeline/01_download/download_maxar.py \
   #           --asset visual --out-dir data/raw_rgb/maxar_visual
   asset: visual

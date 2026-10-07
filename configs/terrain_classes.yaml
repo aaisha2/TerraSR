@@ -16,40 +16,99 @@ worldcover_source:
   filename_template: "ESA_WorldCover_10m_2021_v200_{tile}_Map.tif"
   tile_grid_deg: 3
   cache_dir: "data/cache/worldcover"
+  # The product's epoch. The imagery being labelled is NOT from 2021 (SpaceNet
+  # is 2015-2017, Maxar Open Data is the event date, CORE3D is 2014-2016), so
+  # every label carries a temporal gap: land cover that changed in between is
+  # labelled as it was in 2021, not as the patch shows it. Urban fringe and
+  # cropland are the classes that move most. label_quality_report.py reports
+  # the gap per source so it can be stated rather than assumed away.
+  epoch_year: 2021
 
 # WorldCover class codes -> project terrain category.
+#
+# Two mappings were marked "approximation" and left in place; both are now
+# resolved, because an approximate mapping is a mislabelled patch:
+#   20 Shrubland was mapped to Bare Land/Desert. Shrubland is vegetated and
+#     looks nothing like bare desert at 0.3 m, and in a 7-class scheme its
+#     closest honest neighbour is Grassland/Wetland (sparse low vegetation),
+#     not sand. Remapped.
+#   70 Snow and ice was mapped to Bare Land/Desert. Snow is radiometrically
+#     the opposite of desert (near-saturated PAN vs mid-grey) and is a
+#     different SR problem (low texture, blown highlights). There is no snow
+#     class in this scheme and it should not be smuggled into another one, so
+#     it is left UNMAPPED: patches dominated by snow fall below
+#     purity.min_mapped_fraction and go unlabelled rather than mislabelled.
+#     If snow/ice matters later it needs its own class and its own imagery.
 class_to_terrain:
   10: Forest                    # Tree cover
-  20: "Bare Land/Desert"         # Shrubland -- approximation, see note below
+  20: "Grassland/Wetland"        # Shrubland -- sparse low vegetation
   30: "Grassland/Wetland"        # Grassland
   40: Agriculture                # Cropland
   50: Urban                      # Built-up
   60: "Bare Land/Desert"         # Bare / sparse vegetation
-  70: "Bare Land/Desert"         # Snow and ice -- approximation, see note below
+  # 70 Snow and ice: deliberately unmapped, see note above
   80: Water                      # Permanent water bodies
   90: "Grassland/Wetland"        # Herbaceous wetland
   95: Water                      # Mangroves
   100: "Grassland/Wetland"       # Moss and lichen
 
-# Known gap (flag for supervisor, same style as the PAN/degradation
-# questions already resolved): ESA WorldCover is a land-cover product, not
-# a landform product, so it has no "Mountain" class -- Shrubland/Bare/Snow
-# pixels occur on mountains and on flat drylands alike, and mapping them to
-# Mountain by default would mislabel real deserts. Mountain is therefore
-# NOT derived per-pixel here. Instead it's assigned only via an explicit
-# scene-level override (below), driven by which Maxar/SpaceNet event or AOI
-# a patch's source scene came from -- e.g. a Maxar mountainous-disaster
-# event. A DEM-slope-based per-pixel refinement (Copernicus DEM/SRTM,
-# already scoped as a reserve/ablation source in the build plan) is the
-# correct long-term fix but is not implemented yet.
+# ---------------------------------------------------------------------------
+# Mountain -- now derived from terrain SHAPE, not from land cover
+# ---------------------------------------------------------------------------
+# ESA WorldCover is a land-cover product with no landform classes, so Mountain
+# used to be reachable only through `scene_terrain_overrides` below, which was
+# EMPTY. The class therefore never appeared on a single patch, while still
+# occupying a row in the stage 8 terrain embedding and a weight in the
+# terrain-aware loss. It now comes from the Copernicus DEM GLO-30 (public,
+# anonymous, 1-degree COG tiles cached locally like the WorldCover tiles);
+# stage 4a-bis (dem_slope_stats.py) computes slope and local relief per patch.
+#
+# Verified against real terrain 2026-10-07 (Grand Canyon tile): inner gorge
+# mean slope 26.6 deg / relief 92 m, canyon rim 41.9 deg / relief 263 m,
+# Kaibab and Coconino plateaus 8.8 and 10.5 deg / relief 25-39 m. The
+# thresholds below separate those correctly.
+#
+# KNOWN TAXONOMY LIMITATION: Mountain is a landform and the other six classes
+# are land cover, so they are not mutually exclusive -- a forested mountain is
+# both. `precedence` decides which wins and the decision is recorded per patch
+# (terrain_source, terrain_landcover_under_mountain), so the write-up can state
+# the convention rather than leave it implicit.
+mountain:
+  enabled: true
+  # 'always'             -> steep ground is labelled Mountain whatever the cover
+  # 'only_if_ambiguous'  -> Mountain only replaces the labels in
+  #                         overridable_labels (keeps e.g. Urban and Water)
+  precedence: only_if_ambiguous
+  overridable_labels: ["Bare Land/Desert", "Grassland/Wetland", "Forest"]
+  min_slope_mean_deg: 15.0
+  min_relief_m: 200.0
+  dem_source:
+    base_url: "https://copernicus-dem-30m.s3.amazonaws.com"
+    cache_dir: "data/cache/copernicus_dem"
+    # a 256px 0.3m patch is ~77m across, smaller than three DEM pixels, so the
+    # slope window is padded to this many DEM pixels: slope is a property of
+    # the surrounding landform, not of the patch alone
+    min_window_px: 11
+
 scene_terrain_overrides:
-  # source_scene substring (case-insensitive) -> forced terrain label
-  # example, once a mountainous Maxar event is added to configs/datasets.yaml:
-  # "turkey-earthquake": Mountain
+  # source_scene substring (case-insensitive) -> forced terrain label.
+  # Still available as an escape hatch for ground the DEM cannot characterise,
+  # but no longer the only route to Mountain.
 
 purity:
-  min_purity_to_keep_label: 0.0   # 0 = never discard, just record purity;
-                                    # raise this later for a purity-filtered ablation
+  # A label is only kept if the dominant class holds this share of the patch's
+  # MAPPED pixels. This was 0.0 -- i.e. no threshold at all, so a 34%-forest /
+  # 33%-urban patch was labelled Forest as confidently as a 99% forest patch,
+  # and the terrain conditioning and per-terrain loss trained on that noise.
+  # 0.6 keeps clearly-dominated patches and sends genuinely mixed ones to the
+  # unknown embedding (they stay in the dataset -- see build_manifest.py
+  # --keep-unlabeled -- so the SR task keeps the data, only the conditioning
+  # abstains). Raise towards 0.8 for a purity ablation.
+  min_purity_to_keep_label: 0.6
+  # Share of the patch that must have ANY mapped land-cover class. Guards
+  # against labelling a patch that is mostly WorldCover nodata (coast, scene
+  # edge) or unmapped snow from the few pixels that happen to be mapped.
+  min_mapped_fraction: 0.5
 
 # Canonical terrain -> integer index. Fixed ordering: the dataset maps
 # terrain_label strings to these indices, and stage 8's terrain embedding
