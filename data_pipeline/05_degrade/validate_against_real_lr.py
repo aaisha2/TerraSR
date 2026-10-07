@@ -20,17 +20,26 @@ Usage:
     python validate_against_real_lr.py --synthetic-dir out/pairs/lr --real-dir path/to/real_lr_chips
 """
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from scipy import ndimage
+
+sys.path.insert(0, str(Path(__file__).parent))
+from validate_degradation import read_float  # noqa: E402
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
 def load_gray_float(path: Path) -> np.ndarray:
-    return np.asarray(Image.open(path).convert("L"), dtype=np.float64) / 255.0
+    """[0,1] float, 16-bit GeoTIFF or 8-bit PNG alike.
+
+    This used to be PIL's .convert("L"), which cannot read the 16-bit
+    GeoTIFFs stage 5 actually writes — so the script could not be run against
+    the real pipeline output at all. Shared with validate_degradation.py now.
+    """
+    return read_float(path)
 
 
 def noise_variance(img: np.ndarray) -> float:

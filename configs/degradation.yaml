@@ -4,6 +4,35 @@
 #
 # Order applied per patch: blur -> downsample -> noise -> jpeg
 # (single pass, not the Real-ESRGAN second-order repeat)
+#
+# ---------------------------------------------------------------------------
+# PARAMETER PROVENANCE (revised 2026-10-07)
+# ---------------------------------------------------------------------------
+# Every range below is now stated in, or derived from, a physical quantity
+# that can be checked against the sensor literature, and
+# `python data_pipeline/05_degrade/validate_degradation.py` re-measures the
+# realized values from the generated pairs. The earlier ranges were tuned by
+# eye and were, measurably, far too strong:
+#
+#   isotropic sigma 0.6-2.4 px (HR) == MTF 0.64 down to 0.0008 at the LR
+#   Nyquist frequency. The config targeted a WorldView-class MTF of 0.2-0.35,
+#   so most of that range destroyed one to three orders of magnitude more
+#   high-frequency content than the sensor model it cited. A model trained on
+#   it learns heavy deblurring, not 2x super-resolution, and its PSNR gain
+#   over bicubic is inflated by the easy, synthetic blur it inverts.
+#
+#   Separately, the mtf_elliptical family had a unit bug: an MTF-derived sigma
+#   is in LR pixels and must be scaled by scale_factor to be used as an
+#   HR-space kernel width. It was used unscaled, so that family blurred ~2x
+#   too LITTLE (realized MTF 0.73-0.80 against a 0.20-0.35 target) while the
+#   Gaussian families blurred far too much — the three families disagreed with
+#   each other by about 2x in both directions. Fixed in kernels.py.
+#
+# The MTF <-> sigma relation used throughout (Gaussian PSF):
+#   MTF(f) = exp(-2 (pi sigma f)^2),  f in cycles/pixel of the sampling grid
+#   LR Nyquist f = 0.5 cycles/LR px = 0.5/scale_factor cycles/HR px
+# For scale_factor 2: MTF 0.35 -> sigma_HR 0.92 px;  MTF 0.20 -> 1.14 px;
+#                     MTF 0.15 -> 1.24 px;           MTF 0.40 -> 0.86 px.
 
 scale_factor: 2
 
@@ -12,13 +41,23 @@ blur:
   kernel_choices: ["isotropic_gaussian", "anisotropic_gaussian", "mtf_elliptical"]
   kernel_probs: [0.4, 0.3, 0.3]
   kernel_size: 15                 # odd, pixels (in HR space)
-  isotropic_sigma_range: [0.6, 2.4]
-  anisotropic_sigma_range: [0.6, 3.0]
+  # sigmas are HR-space pixels. Ranges chosen so the realized MTF at the LR
+  # Nyquist frequency lands in the published WorldView-class band (0.15-0.40,
+  # Zhu et al. 2020 and the MTF-filter degradation literature) rather than
+  # somewhere far below it:
+  #   sigma_HR 0.80 -> MTF 0.45     sigma_HR 1.30 -> MTF 0.13
+  isotropic_sigma_range: [0.8, 1.3]
+  # anisotropic models along-track smear, so it is allowed to reach a little
+  # past the nominal sensor MTF (geometric-mean sigma 1.4 -> MTF 0.09) to
+  # represent a degraded acquisition. It is a minority of samples, not the norm.
+  anisotropic_sigma_range: [0.8, 1.4]
   anisotropic_angle_range: [0, 180]     # degrees
-  # MTF-elliptical kernel approximates WorldView-class sensor optics
-  # (Nyquist MTF ~0.2-0.3, per Zhu et al. 2020 / MTF-filter literature)
-  mtf_nyquist_range: [0.2, 0.35]
+  # MTF-elliptical kernel approximates WorldView-class sensor optics directly
+  # in MTF terms; kernels.py converts to an HR-space sigma via scale_factor.
+  mtf_nyquist_range: [0.15, 0.40]
   mtf_ellipticity_range: [1.0, 1.6]     # 1.0 = circular, >1 = elongated
+                                         # (split as 1/sqrt(e), sqrt(e) so the
+                                         #  orientation-averaged MTF stays on target)
 
 downsample:
   # randomly choose one interpolation per patch — avoid overfitting
@@ -28,12 +67,32 @@ downsample:
 
 noise:
   # Poisson (shot noise, signal-dependent) + Gaussian (read noise) mixture
-  # models real sensor physics rather than flat additive noise
-  poisson_scale_range: [0.0, 0.08]      # relative to signal
-  gaussian_sigma_range: [0.0, 0.02]     # relative to [0,1] intensity
+  # models real sensor physics rather than flat additive noise.
+  #
+  # poisson_scale is 1/peak-electrons, so shot SNR at full signal = 1/sqrt(ps):
+  #   ps 0.08 -> SNR    3.5   <- the previous upper bound: visibly grainy,
+  #                              nothing like a real PAN product
+  #   ps 4e-4 -> SNR   50
+  #   ps 1e-4 -> SNR  100     <- WorldView-class PAN at typical radiance
+  # Range below spans SNR 50..infinity, i.e. from a poor-radiance acquisition
+  # to a noiseless one, bracketing the >=100:1 real sensors deliver.
+  poisson_scale_range: [0.0, 0.0004]
+  # read noise as a fraction of full scale; 0.004 -> SNR 250 at full signal.
+  gaussian_sigma_range: [0.0, 0.004]
 
 compression:
-  enabled: true
+  # OFF by default, deliberately. Two reasons:
+  #  1. Physical: the HR source products are 16-bit GeoTIFF straight off the
+  #     sensor archive. JPEG blocking is a *delivery* artifact of 8-bit visual
+  #     products, not part of acquiring a 0.5m image, so including it models a
+  #     degradation this project's LR inputs will never have.
+  #  2. Mechanical: apply_jpeg necessarily quantises to 8-bit (255 levels) and
+  #     back, which silently throws away the 16-bit depth that stage 5 exists
+  #     to preserve — a 256x radiometric precision loss hidden inside a step
+  #     labelled "compression".
+  # Enable it only for a deliberate 8-bit-delivery ablation, and expect the
+  # bit-depth note above to apply.
+  enabled: false
   quality_range: [70, 95]               # randomized JPEG re-encode
 
 output:
@@ -43,14 +102,38 @@ output:
   # png:     legacy 8-bit path, used only for the synthetic smoke-test images.
   format: geotiff
   # how a native-dtype HR patch is mapped to [0,1] for the degradation math
-  # (see _io.normalize_for_degradation). per_patch_max keeps the [0,1]-relative
-  # noise parameters meaningful for PAN that fills only part of the uint16 range.
+  # (see patch_io.normalize_for_degradation). per_patch_max keeps the
+  # [0,1]-relative noise parameters meaningful for PAN that fills only part
+  # of the uint16 range.
   normalization: per_patch_max
 
-seed: null   # set an int for reproducible dataset builds
+seed: 42   # set an int for reproducible dataset builds (null = nondeterministic)
 
 validation:
-  # stage 5 sub-step: compare synthetic LR against real satellite LR
-  # before locking parameters for the full dataset build
+  # Stage 5 sub-step, now runnable with no external data:
+  #   python data_pipeline/05_degrade/validate_degradation.py \
+  #       --manifest data/pairs/degradation_manifest.json --strict
+  # It re-measures the realized degradation from the sampled kernels and from
+  # the written LR/HR pairs, and fails if it leaves the bands below.
+
+  # realized MTF at the LR Nyquist frequency, measured per kernel by FFT
+  expected_nyquist_mtf_range: [0.08, 0.50]
+  # ... and the median over the dataset must sit inside the sensor band
+  expected_median_nyquist_mtf_range: [0.15, 0.40]
+  # PSNR (dB) of the generated LR against an ideal reference LR (area
+  # downsample of the same HR patch, no blur/noise/compression). This is the
+  # single clearest "is the degradation absurdly strong" number: below this
+  # floor, the LR is dominated by synthetic blur and noise rather than by the
+  # resolution change the project is meant to study.
+  min_lr_vs_ideal_psnr_db: 22.0
+  # estimated noise std on LR (high-pass residual), as a fraction of [0,1]
+  max_lr_noise_sigma: 0.02
+  # ... and the same thing scene-independently: LR high-pass sigma divided by
+  # the ideal reference LR's. The original config scored 15.9x here (noise
+  # sigma 0.133 against a scene level of 0.008), i.e. the LR images were
+  # mostly synthetic noise.
+  max_lr_noise_sigma_ratio_vs_ideal: 3.0
+  # optional: directory of real satellite LR chips of comparable GSD for the
+  # separate statistics comparison in validate_against_real_lr.py
+  real_lr_reference_dir: null
   metrics: ["noise_variance", "edge_density", "radial_power_spectrum"]
-  real_lr_reference_dir: null   # fill in once reference LR chips are collected
