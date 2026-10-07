@@ -48,6 +48,18 @@ Earlier versions of this notebook stored every intermediate file on Drive. Patch
 4. **Section 6:** pipeline stages 2–6 (resumable)
 5. **Section 6b:** save the dataset archive to Drive
 
+The stage cells also write three audits that decide whether the eventual numbers
+mean anything. Read them before training:
+
+| Audit | Written by | What it rules out |
+|---|---|---|
+| `data/patches/label_quality.md` | stage 4 | labels that look clean but are mixed, mislabelled, or for a class with no patches |
+| `data/pairs/degradation_validation.md` | stage 5 | an LR that is dominated by synthetic blur and noise rather than the resolution change |
+| `data/dataset/split_leakage_audit.md` | stage 6 | the same ground appearing in both train and test |
+
+Stages 5 and 6 pass `--strict`, so a failing audit stops the cell instead of
+handing you a quietly invalid dataset.
+
 ### Later sessions — skip the pipeline
 1. **Sections 0–4**
 2. **Section 4b:** restores the dataset archive from Drive to local disk
@@ -57,7 +69,9 @@ Earlier versions of this notebook stored every intermediate file on Drive. Patch
 - **Sections 8–10:** single-batch test, 5-epoch smoke run, resume test
 - **Section 11:** full training of all four models (SRCNN, SRGAN, SwinIR, TerraSR)
 - **Section 11b:** training status — epochs done, resume point, best PSNR per model
+- **Section 11c:** ablation grid — the 7 variants that attribute the gain (incl. the shuffled-label control)
 - **Section 12:** evaluation — report written to `MyDrive/TerraSR-Colab/results/`
+  (the report carries its own validity section: the three audits above plus the ablation verdicts)
 - **Section 13:** download the report
 
 ---

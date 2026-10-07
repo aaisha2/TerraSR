@@ -37,6 +37,33 @@ def load_model_from_checkpoint(ckpt_path, device):
     return model, name, (name in TERRAIN_MODELS)
 
 
+def checkpoint_training_conditions(ckpt_path) -> dict:
+    """The conditions a checkpoint was trained under, read from the config it
+    carries: loss mode, terrain label mode, whether conditioning was on, and
+    the parameter count. The ablation table needs these to attribute a
+    difference to the right cause, and reading them from the checkpoint means
+    the table cannot silently mislabel a run."""
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    cfg = ckpt.get("config") or {}
+    model_cfg = cfg.get("model") or {}
+    name = ckpt.get("model_name", model_cfg.get("name"))
+    conditioned = model_cfg.get("conditioned")
+    if conditioned is None:
+        conditioned = str(name or "").lower().startswith("terrasr")
+    n_params = sum(v.numel() for v in ckpt["model_state"].values())
+    return {
+        "model_name": name,
+        "conditioned": bool(conditioned),
+        "loss_mode": (cfg.get("loss") or {}).get("mode", "terrain_aware"),
+        "label_mode": (cfg.get("data") or {}).get("terrain_label_mode", "real"),
+        "seed": (cfg.get("train") or {}).get("seed"),
+        "epochs": (cfg.get("train") or {}).get("epochs"),
+        "epoch_reached": ckpt.get("epoch"),
+        "val_psnr": ckpt.get("best_metric"),
+        "n_params": int(n_params),
+    }
+
+
 def make_test_loader(test_csv, terrain_config, batch_size=8, normalize="per_patch_max",
                       pan_filter="all"):
     terrain_index = load_terrain_index(terrain_config)
@@ -132,12 +159,29 @@ def _metrics(sr_np, hr_np):
     return float(psnr), float(ssim)
 
 
+def apply_eval_label_mode(terrain_idx: torch.Tensor, mode: str) -> torch.Tensor:
+    """Mirror of training/train_terrasr.py::apply_label_mode, so an ablation
+    variant is evaluated under the label condition it was trained with. A
+    shuffled-label control measured with real labels would be testing a
+    different model than the one that was trained."""
+    if mode in (None, "real"):
+        return terrain_idx
+    if mode == "unknown":
+        return torch.full_like(terrain_idx, -1)
+    if mode == "shuffled":
+        return terrain_idx[torch.randperm(terrain_idx.shape[0],
+                                           device=terrain_idx.device)]
+    raise ValueError(f"unknown label mode '{mode}'")
+
+
 @torch.no_grad()
 def run_sr_over_loader(loader, device, model=None, is_terrain=False,
-                        bicubic_scale=None, with_lpips=False) -> pd.DataFrame:
+                        bicubic_scale=None, with_lpips=False,
+                        label_mode="real") -> pd.DataFrame:
     """Produce a per-patch metrics table (PSNR, SSIM, optionally LPIPS).
     Provide either a `model` (+ is_terrain) or `bicubic_scale` for the
-    interpolation floor."""
+    interpolation floor. `label_mode` applies an ablation control to the
+    terrain labels (see apply_eval_label_mode)."""
     net = get_lpips(device) if with_lpips else None
     records = []
     for lr, hr, terrain_idx, meta in loader:
@@ -146,7 +190,7 @@ def run_sr_over_loader(loader, device, model=None, is_terrain=False,
             sr = F.interpolate(lr, scale_factor=bicubic_scale, mode="bicubic",
                                align_corners=False)
         elif is_terrain:
-            sr = model(lr, terrain_idx.to(device))
+            sr = model(lr, apply_eval_label_mode(terrain_idx.to(device), label_mode))
         else:
             sr = model(lr)
 

@@ -54,6 +54,8 @@ def main():
                      help="cap images per class for a faster run")
     ap.add_argument("--no-training", action="store_true",
                      help="build the dataset only (skip stages 7-9)")
+    ap.add_argument("--no-ablation", action="store_true",
+                     help="skip the stage 8 ablation grid (7 extra short runs)")
     args = ap.parse_args()
 
     print("=" * 60, "\n== UC Merced test pipeline\n", "=" * 60)
@@ -69,17 +71,35 @@ def main():
         prepare += ["--limit-per-class", args.limit_per_class]
     run(prepare)
 
-    # --- stage 5: degrade (REAL script) ---
+    # --- stage 4c: label quality audit (REAL script) ---
+    run([PY, "data_pipeline/04_labeling/label_quality_report.py",
+         "--manifest", LABELED, "--config", f"{CFG}/ucmerced_terrain.yaml",
+         "--split-config", f"{CFG}/split.yaml",
+         "--report", f"{PATCHES}/label_quality.md"])
+
+    # --- stage 5: degrade + validate the degradation (REAL scripts) ---
     run([PY, "data_pipeline/05_degrade/make_lr_hr_pairs.py",
          "--manifest", LABELED, "--out-dir", PAIRS,
-         "--config", f"{CFG}/degradation.yaml", "--only-labeled"])
+         "--config", f"{CFG}/degradation.yaml"])
+    run([PY, "data_pipeline/05_degrade/validate_degradation.py",
+         "--config", f"{CFG}/degradation.yaml",
+         "--manifest", f"{PAIRS}/degradation_manifest.json",
+         "--report", f"{PAIRS}/degradation_validation.md", "--strict"])
 
-    # --- stage 6: package (REAL scripts) ---
+    # --- stage 6: package + leakage audit (REAL scripts) ---
     run([PY, "data_pipeline/06_package/build_manifest.py",
          "--labeled", LABELED, "--degradation", f"{PAIRS}/degradation_manifest.json",
          "--out-dir", DATASET])
     run([PY, "data_pipeline/06_package/split_train_val_test.py",
          "--manifest", f"{DATASET}/dataset_manifest.parquet", "--config", f"{CFG}/split.yaml"])
+    # UC Merced images carry no CRS, so this split falls back to scene mode and
+    # the audit cannot clear it. That is the correct outcome for these fixtures
+    # and it is why --strict is NOT passed here, unlike the real pipeline: the
+    # test exercises the audit, it cannot satisfy it.
+    run([PY, "data_pipeline/06_package/audit_split_leakage.py",
+         "--manifest", f"{DATASET}/dataset_manifest_split.csv",
+         "--config", f"{CFG}/split.yaml",
+         "--report", f"{DATASET}/split_leakage_audit.md"])
     run([PY, "data_pipeline/06_package/dataset_stats.py",
          "--manifest", f"{DATASET}/dataset_manifest_split.parquet", "--config", f"{CFG}/split.yaml"])
 
@@ -106,6 +126,15 @@ def main():
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", test_csv,
          "--terrain-config", terrain_cfg, "--checkpoints", *ckpts])
 
+    # --- stage 8 ablation: attribute the gain, or do not claim it (REAL scripts) ---
+    if not args.no_ablation:
+        run([PY, "training/run_ablation.py", "--config", f"{CFG}/ablation.yaml",
+             "--out-root", f"{CKPT}/ablation"])
+        run([PY, "evaluation/eval_ablation.py", "--runs-root", f"{CKPT}/ablation",
+             "--test-csv", test_csv, "--terrain-config", terrain_cfg,
+             "--ablation-config", f"{CFG}/ablation.yaml",
+             "--report", f"{DATASET}/ablation.md"])
+
     # --- results report (downloadable .docx + .md) ---
     run([PY, "evaluation/make_results_report.py", "--test-csv", test_csv,
          "--terrain-config", terrain_cfg,
@@ -116,6 +145,11 @@ def main():
     print("\nUC Merced test pipeline complete.")
     print(f"  dataset: {DATASET}/  |  checkpoints: {CKPT}/")
     print(f"  results report: {DATASET}/results_report.docx (+ .md)")
+    print(f"  label quality:  {PATCHES}/label_quality.md")
+    print(f"  degradation:    {PAIRS}/degradation_validation.md")
+    print(f"  split audit:    {DATASET}/split_leakage_audit.md")
+    if not args.no_ablation:
+        print(f"  ablation:       {DATASET}/ablation.md")
     print(f"  web app: TERRASR_CKPT={CKPT}/terrasr/best.pth python webapp/backend/app.py")
 
 

@@ -1,0 +1,58 @@
+# UC Merced TEST ablation grid - the same variants as configs/ablation.yaml
+# with 2 epochs and the small CPU model, so the whole grid runs end to end
+# locally. The PSNR numbers from this are meaningless; it exercises the
+# machinery.
+base_config: test_pipeline_ucmerced/configs/train_terrasr.yaml
+common_overrides:
+  train.epochs: 2
+  train.batch_size: 16
+noise_floor_db: 0.1
+seeds:
+- 42
+variants:
+  swinir_l1:
+    description: SwinIR + L1 - the shared baseline everything is measured against
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: l1
+  swinir_uniform_loss:
+    description: SwinIR + composite loss with IDENTICAL weights for every terrain
+      - isolates the loss shape from the per-terrain weighting
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: uniform_composite
+  swinir_terrainloss:
+    description: SwinIR + the terrain-aware loss, no architectural conditioning -
+      isolates the loss half of the contribution
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: terrain_aware
+  terrasr_l1:
+    description: TerraSR (FiLM conditioning) + plain L1 - isolates the architecture
+      half of the contribution
+    overrides:
+      model.name: terrasr
+      loss.mode: l1
+  terrasr_full:
+    description: TerraSR + terrain-aware loss - the full proposed method
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+  terrasr_shuffled_labels:
+    description: 'CONTROL: the full method with terrain labels permuted within each
+      batch. Same capacity, same loss, no terrain signal - terrasr_full must beat
+      this for the claim to hold'
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+      data.terrain_label_mode: shuffled
+  terrasr_unknown_labels:
+    description: 'CONTROL: the full method with every sample routed to the unknown-terrain
+      embedding - the conditioning path exists but carries no per-sample information'
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+      data.terrain_label_mode: unknown

@@ -1,0 +1,101 @@
+# Stage 8 ABLATION — what part of TerraSR's gain is actually terrain?
+#
+# TerraSR changes two things at once relative to the SwinIR baseline: it adds
+# FiLM terrain conditioning (extra parameters) and it swaps L1 for a composite
+# terrain-weighted loss. Comparing only `terrasr` against `swinir + L1`
+# therefore cannot attribute a gain to terrain at all - the same number would
+# appear if the gain came from the extra capacity, or from the composite loss
+# shape, with terrain contributing nothing. The project's central claim is
+# unsupported without this grid.
+#
+# Every variant trains on the SAME data, epochs, batch size, learning rate and
+# seed. Only the three marked axes move: model, loss.mode, and
+# data.terrain_label_mode.
+#
+# Read the result as a chain of differences:
+#   terrasr_full      - swinir_l1               the headline claim
+#   terrasr_full      - terrasr_shuffled_labels does TERRAIN INFORMATION help?
+#   terrasr_l1        - swinir_l1               the conditioning alone
+#   swinir_terrainloss- swinir_l1               the loss alone
+#   swinir_terrainloss- swinir_uniform_loss     per-terrain weighting vs the
+#                                               composite loss shape
+#
+# terrasr_shuffled_labels is the control that matters most. Identical
+# architecture, identical parameter count, identical loss family - the only
+# difference is that each patch is handed another patch's terrain label. If
+# terrasr_full does not beat it by more than seed noise, the gain is not
+# coming from terrain.
+
+base_config: configs/train_terrasr.yaml
+
+# Applied to every variant, so the comparison is matched. Keep epochs here,
+# not per variant.
+common_overrides:
+  train.epochs: 100
+  train.seed: 42
+
+# PSNR differences below this (dB) are not interpretable from a single run.
+# eval_ablation.py marks them, and with >1 seed it reports the measured spread
+# instead of this assumption.
+noise_floor_db: 0.10
+
+# Run every variant with these seeds. One seed cannot separate a small real
+# effect from initialisation noise; two is the minimum for an honest claim and
+# three is better. Cost scales linearly, so start with [42] to get the grid
+# working and then extend.
+seeds: [42]
+
+variants:
+  swinir_l1:
+    description: "SwinIR + L1 - the shared baseline everything is measured against"
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: l1
+
+  swinir_uniform_loss:
+    description: "SwinIR + composite loss with IDENTICAL weights for every terrain
+                  - isolates the loss shape from the per-terrain weighting"
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: uniform_composite
+
+  swinir_terrainloss:
+    description: "SwinIR + the terrain-aware loss, no architectural conditioning
+                  - isolates the loss half of the contribution"
+    overrides:
+      model.name: swinir
+      model.conditioned: false
+      loss.mode: terrain_aware
+
+  terrasr_l1:
+    description: "TerraSR (FiLM conditioning) + plain L1 - isolates the
+                  architecture half of the contribution"
+    overrides:
+      model.name: terrasr
+      loss.mode: l1
+
+  terrasr_full:
+    description: "TerraSR + terrain-aware loss - the full proposed method"
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+
+  terrasr_shuffled_labels:
+    description: "CONTROL: the full method with terrain labels permuted within
+                  each batch. Same capacity, same loss, no terrain signal -
+                  terrasr_full must beat this for the claim to hold"
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+      data.terrain_label_mode: shuffled
+
+  terrasr_unknown_labels:
+    description: "CONTROL: the full method with every sample routed to the
+                  unknown-terrain embedding - the conditioning path exists but
+                  carries no per-sample information"
+    overrides:
+      model.name: terrasr
+      loss.mode: terrain_aware
+      data.terrain_label_mode: unknown

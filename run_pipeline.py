@@ -84,16 +84,35 @@ def stage_label(cfg, dirs):
     run([PY, "data_pipeline/04_labeling/worldcover_zonal_stats.py",
          "--manifest", patches / "patch_manifest_filtered.json",
          "--config", cfg["configs"]["terrain"], "--only-kept"])
+    # 4a-bis: DEM slope/relief, which is the only way the Mountain class can be
+    # assigned (WorldCover has no landform classes)
+    run([PY, "data_pipeline/04_labeling/dem_slope_stats.py",
+         "--manifest", patches / "patch_manifest_zonal.json",
+         "--config", cfg["configs"]["terrain"], "--only-kept"])
     run([PY, "data_pipeline/04_labeling/assign_dominant_terrain.py",
          "--manifest", patches / "patch_manifest_zonal.json",
          "--config", cfg["configs"]["terrain"]])
+    # 4c: audit the labels we just produced, so their quality is a measured
+    # number in the run output rather than an assumption
+    run([PY, "data_pipeline/04_labeling/label_quality_report.py",
+         "--manifest", patches / "patch_manifest_labeled.json",
+         "--config", cfg["configs"]["terrain"],
+         "--split-config", cfg["configs"]["split"],
+         "--report", patches / "label_quality.md"])
 
 
 def stage_degrade(cfg, dirs):
     run([PY, "data_pipeline/05_degrade/make_lr_hr_pairs.py",
          "--manifest", Path(dirs["patches"]) / "patch_manifest_labeled.json",
-         "--out-dir", dirs["pairs"], "--config", cfg["configs"]["degradation"],
-         "--only-labeled"])
+         "--out-dir", dirs["pairs"], "--config", cfg["configs"]["degradation"]])
+    # The degradation defines the task, so it is validated as part of building
+    # it: --strict stops the pipeline if the realized blur/noise leaves the
+    # sensor model the config claims.
+    run([PY, "data_pipeline/05_degrade/validate_degradation.py",
+         "--config", cfg["configs"]["degradation"],
+         "--manifest", Path(dirs["pairs"]) / "degradation_manifest.json",
+         "--report", Path(dirs["pairs"]) / "degradation_validation.md",
+         "--strict"])
 
 
 def stage_package(cfg, dirs):
@@ -105,12 +124,19 @@ def stage_package(cfg, dirs):
     run([PY, "data_pipeline/06_package/split_train_val_test.py",
          "--manifest", dataset / "dataset_manifest.parquet",
          "--config", cfg["configs"]["split"]])
+    # Prove the split separates GROUND, not just file names. --strict fails the
+    # run rather than training on a leaking split: several sources here image
+    # the same ground under different scene names.
+    run([PY, "data_pipeline/06_package/audit_split_leakage.py",
+         "--manifest", dataset / "dataset_manifest_split.csv",
+         "--config", cfg["configs"]["split"],
+         "--report", dataset / "split_leakage_audit.md", "--strict"])
     run([PY, "data_pipeline/06_package/dataset_stats.py",
          "--manifest", dataset / "dataset_manifest_split.parquet",
          "--config", cfg["configs"]["split"]])
 
 
-def stage_training():
+def stage_training(with_ablation=True):
     """Stages 7-9. Trains the three baselines + TerraSR, then evaluates all of
     them (transformer vs CNN vs GAN vs terrain-aware). TerraSR is passed LAST to
     the evaluators so the per-terrain delta reads terrasr - each baseline."""
@@ -125,6 +151,18 @@ def stage_training():
          "--with-bicubic", "--checkpoints", *ckpts])
     run([PY, "evaluation/eval_per_terrain.py", "--test-csv", "data/dataset/test.csv",
          "--checkpoints", *ckpts])
+
+    if with_ablation:
+        # Stage 8 ablation. Without it, a TerraSR-over-SwinIR gain cannot be
+        # attributed to terrain at all: the same number appears if it came from
+        # the extra FiLM parameters or from the composite loss shape. This is
+        # the grid that decides, including the shuffled-label control.
+        run([PY, "training/run_ablation.py", "--config", "configs/ablation.yaml",
+             "--out-root", "checkpoints/ablation"])
+        run([PY, "evaluation/eval_ablation.py", "--runs-root", "checkpoints/ablation",
+             "--test-csv", "data/dataset/test.csv",
+             "--report", "data/dataset/ablation.md"])
+
     # results report (downloadable .docx + .md) — ready to share with the supervisor
     run([PY, "evaluation/make_results_report.py", "--test-csv", "data/dataset/test.csv",
          "--split-manifest", "data/dataset/dataset_manifest_split.csv",
@@ -138,6 +176,10 @@ def main():
     ap.add_argument("--skip", help="comma-separated stages to skip")
     ap.add_argument("--list-only", action="store_true", help="dry-run the download stage")
     ap.add_argument("--with-training", action="store_true", help="also run stages 7-9")
+    ap.add_argument("--no-ablation", action="store_true",
+                     help="with --with-training: skip the stage 8 ablation grid "
+                          "(it is 7 extra training runs). The headline TerraSR "
+                          "result is not attributable to terrain without it.")
     args = ap.parse_args()
 
     cfg = yaml.safe_load(Path(args.config).read_text())
@@ -165,7 +207,7 @@ def main():
 
     if args.with_training:
         print(f"\n{'='*60}\n== stages 7-9: training + evaluation\n{'='*60}")
-        stage_training()
+        stage_training(with_ablation=not args.no_ablation)
 
     print("\npipeline complete.")
 

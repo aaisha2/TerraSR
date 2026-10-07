@@ -59,11 +59,11 @@ would give). `previews/` is gitignored.
 | 1 — download | **working** — SpaceNet (PAN) + Maxar Open Data (pan_analytic), verified against real buckets |
 | 2 — standardize | **working** — PAN/pseudo-PAN extraction + CRS/dtype normalization, tested on a real Maxar crop and a synthetic geographic RGB fixture |
 | 3 — patchify | **working** — fixed-grid patch extraction + nodata/blank/saturation filtering, tested on a real Maxar crop straddling a nodata boundary |
-| 4 — terrain labeling | **working** — ESA WorldCover zonal stats + dominant-terrain assignment, tested end-to-end on real patches from the stage 3 output |
-| 5 — degrade (LR/HR pairs) | **working** — 16-bit GeoTIFF output (lossless HR copy + georeferenced LR), manifest-drivable; legacy 8-bit PNG path retained for smoke tests |
-| 6 — package + split | **working** — unified manifest join + geographic-block split + dataset stats, tested end-to-end on 3 real Maxar-derived scenes |
+| 4 — terrain labeling | **working** — WorldCover zonal stats + DEM slope (makes Mountain obtainable) + purity-thresholded assignment + label-quality audit with a manual-QC sample |
+| 5 — degrade (LR/HR pairs) | **working** — 16-bit GeoTIFF output (lossless HR copy + georeferenced LR); parameters calibrated to sensor MTF/SNR and validated by `validate_degradation.py` (7/7) |
+| 6 — package + split | **working** — unified manifest join + spatial-block split (blocks of ground, not scene names) + leakage audit proving no shared ground |
 | 7 — baselines (SRCNN/SRGAN/SwinIR) | **working** — manifest-driven Dataset + all 3 models + model-agnostic trainer, smoke-tested end-to-end on CPU |
-| 8 — TerraSR model | **working** — SwinIR + terrain embedding (FiLM) + terrain-aware loss, smoke-tested end-to-end on CPU |
+| 8 — TerraSR model | **working** — SwinIR + terrain embedding (FiLM) + terrain-aware loss, plus the 7-variant attribution ablation incl. the shuffled-label control |
 | 9 — evaluation | **working** — overall + per-terrain PSNR/SSIM (tested); downstream-detection harness (proxy metric, documented) |
 | 10 — web app | **working** — FastAPI backend (loads a trained checkpoint) + build-free browser UI (upload, terrain select, before/after slider), verified end-to-end |
 
@@ -182,9 +182,19 @@ the same pairs as an uninterrupted run.
 python data_pipeline/04_labeling/worldcover_zonal_stats.py \
     --manifest out/patches/patch_manifest_filtered.json --only-kept
 
-# 4b: dominant terrain label + purity from the histogram
+# 4a-bis: DEM slope + local relief - the only way the Mountain class can be
+#         assigned (WorldCover has no landform classes)
+python data_pipeline/04_labeling/dem_slope_stats.py \
+    --manifest out/patches/patch_manifest_zonal.json --only-kept
+
+# 4b: terrain label + purity/margin/confidence from the histogram and slope
 python data_pipeline/04_labeling/assign_dominant_terrain.py \
     --manifest out/patches/patch_manifest_zonal.json
+
+# 4c: label quality audit + a stratified sample for manual verification
+python data_pipeline/04_labeling/label_quality_report.py \
+    --manifest out/patches/patch_manifest_labeled.json \
+    --report out/patches/label_quality.md
 ```
 
 WorldCover tiles are cached locally on first use rather than streamed via
@@ -199,15 +209,58 @@ histogram for one patch (Forest, purity 0.85) was `{Tree cover: 165,
 Grassland: 30}` — cross-checked against the patch's own visual preview
 (field/forest/path texture), which matches.
 
-**Known gap, flagged rather than silently patched over:** ESA WorldCover
-is a land-cover product with no landform classes, so "Mountain" cannot be
-derived from it per-pixel — Shrubland/Bare/Snow occur on mountains and on
-flat drylands alike. Mountain is therefore only assigned via
-`scene_terrain_overrides` in `configs/terrain_classes.yaml` (a source-scene
-name match, e.g. tagging a whole mountainous Maxar event), not from the
-pixel histogram. A DEM-slope-based per-pixel refinement (Copernicus
-DEM/SRTM — already scoped as a reserve source in the build plan) would be
-the correct long-term fix but isn't implemented yet.
+### Label quality
+
+The labels are automated, so their quality is a property of the data and the
+thresholds, not something to assume. Three defects were fixed in 2026-10, all
+of which produced labels that looked clean in the manifest:
+
+- **Nodata could win the majority vote.** Unmapped WorldCover codes (0 = no
+  data, present on every coastal and scene-edge patch) were bucketed as
+  `Unmapped` and voted like a real class, so a mostly-nodata patch was labelled
+  `Unmapped` - a string absent from `terrain_index`, which the Dataset then
+  silently mapped to the unknown embedding. Unmapped pixels are now excluded
+  from the vote, purity is computed over mapped pixels only, and a patch with
+  less than `purity.min_mapped_fraction` mapped is left unlabelled with a
+  recorded reason.
+- **No purity threshold.** `min_purity_to_keep_label` was `0.0`, so a 34%
+  forest / 33% urban patch was labelled Forest as confidently as a 99% forest
+  patch, and the terrain conditioning and per-terrain loss trained on that
+  noise. It is now `0.6`, with the margin over the runner-up recorded per patch.
+- **Mountain was unobtainable.** ESA WorldCover is a land-cover product with no
+  landform classes, so Mountain came only from `scene_terrain_overrides` - and
+  that dict was empty. Terrain index 4 had an embedding row in the stage 8 model
+  and a weight in the terrain-aware loss that no training sample ever touched.
+  It now comes from **Copernicus DEM GLO-30** slope and local relief (public,
+  anonymous, 1-degree COG tiles, cached like the WorldCover tiles). Verified
+  against the Grand Canyon tile: inner gorge 26.6 deg mean slope / 92 m relief
+  and the rim 41.9 deg / 263 m are Mountain; the Kaibab and Coconino plateaus at
+  8.8 and 10.5 deg are not.
+
+Two land-cover mappings marked "approximation" were also resolved: Shrubland
+was mapped to Bare Land/Desert (vegetated ground labelled as sand) and is now
+Grassland/Wetland; Snow and ice was also mapped to Bare Land/Desert, which is
+radiometrically its opposite, and is now left **unmapped**, so snow-dominated
+patches go unlabelled rather than mislabelled.
+
+Mountain is a landform while the other six classes are land cover, so they are
+not mutually exclusive - `mountain.precedence` sets the convention, and each
+patch records which rule applied.
+
+`label_quality_report.py` reports support per class (naming any class with zero
+patches, so the write-up cannot call it a terrain type), purity and margin
+distributions, why patches went unlabelled, a purity-threshold sweep, DEM
+coverage, and the WorldCover-2021 vs imagery-date gap. It also writes
+`label_qc_sample.csv` - N patches per class with an empty `human_verdict`
+column - so a **human-verified** label accuracy can be quoted. The automated
+statistics describe how *decisive* the vote was, which is not the same thing as
+whether it was *right*.
+
+Because stage 4 now abstains on mixed patches, stage 6a **keeps** unlabelled
+patches by default (`--drop-unlabeled` restores the old behaviour): dropping
+them would delete a large share of the dataset and bias the rest towards pure
+single-terrain scenes, when only the conditioning needs a label and the model
+already has an unknown-terrain row.
 
 ## Stage 10 — web app
 
@@ -296,6 +349,58 @@ and the loss is the terrain-aware composite — so results stay directly
 comparable to the baselines under matched conditions. Smoke-tested
 end-to-end on CPU (perceptual disabled): trains, validates, checkpoints.
 
+### Ablation — what is the gain actually from?
+
+TerraSR changes **two** things at once relative to SwinIR: it adds FiLM
+conditioning (extra parameters) and it swaps L1 for a composite terrain-weighted
+loss. So comparing only `terrasr` against `swinir + L1` **cannot attribute a
+gain to terrain** — the identical number would appear if the gain came from the
+extra capacity, or from the composite loss shape with terrain contributing
+nothing at all. Without the grid below, the project's central claim is
+unsupported whatever the headline PSNR says.
+
+`train_terrasr.py` therefore takes three independent axes — `model.name` /
+`model.conditioned`, `loss.mode`, and `data.terrain_label_mode` — and
+`configs/ablation.yaml` defines the variants:
+
+| variant | model | loss | labels | isolates |
+|---|---|---|---|---|
+| `swinir_l1` | SwinIR | L1 | — | the shared baseline |
+| `swinir_uniform_loss` | SwinIR | composite, identical weights per terrain | real | the loss *shape* |
+| `swinir_terrainloss` | SwinIR | terrain-aware | real | the loss half |
+| `terrasr_l1` | TerraSR | L1 | real | the architecture half |
+| `terrasr_full` | TerraSR | terrain-aware | real | the full method |
+| `terrasr_shuffled_labels` | TerraSR | terrain-aware | **permuted** | **the control** |
+| `terrasr_unknown_labels` | TerraSR | terrain-aware | all unknown | conditioning with no signal |
+
+```bash
+python training/run_ablation.py                     # resumable, variant by variant
+python evaluation/eval_ablation.py --runs-root checkpoints/ablation \
+    --test-csv data/dataset/test.csv --report data/dataset/ablation.md
+```
+
+`terrasr_shuffled_labels` is the one that decides the claim: identical
+architecture, identical parameter count, identical loss family — the only
+difference is that each patch is handed *another* patch's terrain label. If
+`terrasr_full` does not beat it by more than seed noise, the conditioning is not
+using terrain information, and whatever gain the full model shows over the
+baseline comes from capacity and the loss. Each variant is also evaluated under
+the label condition it was *trained* with, since a shuffled-label control
+measured with real labels is not the model that was trained.
+
+`eval_ablation.py` builds the attribution chain (`headline claim`, `terrain
+information`, `conditioning alone`, `loss alone`, `per-terrain weighting`),
+reports parameter counts beside each difference — a gain that tracks parameter
+count rather than terrain is not a terrain result — and marks any difference
+smaller than the noise floor as not interpretable. With one seed the floor is an
+assumption from the config and the report says so; with several seeds it uses
+the **measured** spread instead. Start at `seeds: [42]` to get the grid running,
+then extend before quoting a sub-0.1 dB effect.
+
+Verified end to end on the UC Merced fixtures: all 7 variants train, resume and
+evaluate, with the controls param-matched at +0 and conditioning adding exactly
++7,960 parameters.
+
 ## Stage 7 — baselines (SRCNN / SRGAN / SwinIR)
 
 The stage 6 manifest feeds a single manifest-driven PyTorch `Dataset`
@@ -345,13 +450,26 @@ python data_pipeline/06_package/build_manifest.py \
     --degradation out/pairs/degradation_manifest.json \
     --out-dir out/dataset
 
-# 6b: geographic-block train/val/test split (whole scenes, never per-patch)
+# 6b: geographic-block train/val/test split (blocks of GROUND, not scene names)
 python data_pipeline/06_package/split_train_val_test.py \
     --manifest out/dataset/dataset_manifest.parquet
 
-# 6c: sanity report — per-terrain counts, floor check, leakage guard
+# 6c: prove the split shares no ground between train and test
+python data_pipeline/06_package/audit_split_leakage.py \
+    --manifest out/dataset/dataset_manifest_split.csv \
+    --report out/dataset/split_leakage_audit.md --strict
+
+# 6d: sanity report — per-terrain counts, floor check
 python data_pipeline/06_package/dataset_stats.py \
     --manifest out/dataset/dataset_manifest_split.parquet
+```
+
+If a dataset was built before stage 3 recorded patch geography, backfill it
+instead of rebuilding (reads the geotransform off each patch GeoTIFF):
+
+```bash
+python data_pipeline/06_package/backfill_patch_geo.py \
+    --manifest out/dataset/dataset_manifest.csv
 ```
 
 The unified manifest (`dataset_manifest_split.parquet`/`.csv`, plus
@@ -359,27 +477,101 @@ The unified manifest (`dataset_manifest_split.parquet`/`.csv`, plus
 7–9: one row per patch with `hr_path`, `lr_path`, `terrain_label`,
 `terrain_purity`, `pseudo_pan`, `source_scene`, and `split`.
 
-Split is by **geographic block** — the whole source scene is the atomic
-unit, never divided across splits, so near-duplicate neighbouring patches
-can't leak train content into val/test. Assignment uses a normalized-deficit
-greedy that converges to the configured 80/10/10 with many scenes and still
-spreads scenes across splits when there are few. `dataset_stats.py` runs a
-leakage guard confirming no scene spans multiple splits, and flags any
-terrain below the per-class floor (surfacing the water/mountain scarcity
-risk before training).
+Split is by **geographic block**: patch centroids are quantised to a
+`block_size_km` grid (longitude step widened by 1/cos(lat) so blocks stay
+roughly square), whole blocks are assigned to one split, and patches within
+`buffer_m` of a differently-assigned block are dropped entirely
+(`split='excluded_buffer'`). Assignment uses a normalized-deficit greedy that
+converges to the configured 80/10/10 with many blocks and still spreads blocks
+across splits when there are few.
 
-Tested end-to-end on 3 real scenes cropped from the downloaded Maxar tile,
-run through stages 2→3→4→5 (GeoTIFF output): 48 patches joined cleanly, each
-scene landed in a distinct split with zero leakage, and the stats report
-correctly flagged Water/Mountain as absent.
+**Why blocks and not scenes.** The split used to treat `source_scene` as the
+atomic unit. That stops adjacent-patch leakage *inside* a scene but not
+same-location leakage *between* scenes — and five of this project's sources
+image the same ground under different scene names:
+
+| Source | Same ground appears as |
+|---|---|
+| CORE3D | ~154 scenes over 5 sites, i.e. tens of repeat WorldView collects of one city |
+| Maxar events | pre-event and post-event acquisitions of the same quadkeys |
+| `maxar_visual` | the *same scenes* as `maxar`, just the `visual` asset instead of `pan_analytic` |
+| `naip_pc` | its AOIs are deliberately chosen to overlap the CORE3D sites |
+| SpaceNet | strips within an AOI overlap at the edges |
+
+Measured on a fixture reproducing those routes, the scene-name split put **33%
+of val and 33% of test patches within 0 m of a training patch** — the same
+ground, in both sets, so the reported test PSNR/SSIM was partly a memorisation
+score. The block split passes the same audit with a 468 m minimum separation.
+
+`audit_split_leakage.py` is what verifies this rather than assuming it: for
+every held-out patch it measures the distance to the nearest *training* patch
+(KD-tree in a local metric projection) and fails if any is closer than a patch
+footprint. It also reports the routes a scene-name split cannot see — locations
+appearing in two splits, repeat coverage straddling splits, identical geometry
+twice. `--strict` makes it gate the pipeline.
+
+One consequence worth stating in the write-up: a scene now *may* contribute to
+several splits, because a scene covers many blocks of ground and blocks are the
+unit. That is correct — those are different locations. What must never happen is
+one location in two splits, and that is what the audit checks.
+
+Every source must go through **one** manifest and **one** split. Splitting
+true-PAN and pseudo-PAN separately re-introduces the leakage, because the block
+assignment would be independent; Experiment 1 vs 2 is selected at training time
+with `data.pan_filter`.
 
 ## Stage 5 — degradation pipeline
 
 Single-order pipeline confirmed with supervisor 2026-07-11: randomized
 blur (Gaussian / anisotropic Gaussian / MTF-elliptical) -> randomized
-downsample (nearest/area/bicubic) -> Poisson+Gaussian noise -> JPEG
-recompression (quality 70-95). All parameters live in
-`configs/degradation.yaml`.
+downsample (nearest/area/bicubic) -> Poisson+Gaussian noise -> optional JPEG
+recompression. All parameters live in `configs/degradation.yaml`.
+
+### Calibration and validation
+
+The LR/HR pairs *define the task*, so the degradation is calibrated against the
+sensor literature and re-measured from the built dataset. Two errors had gone
+unnoticed because nothing checked, and they pulled in opposite directions:
+
+- **A unit bug in the MTF kernel family.** A sigma derived from a Nyquist-MTF
+  target is in *LR* pixels, but the blur runs on the HR grid before
+  downsampling, so it must be scaled by `scale_factor`. It was used unscaled,
+  so that family blurred ~2× too *little* (realized MTF 0.73-0.80 against its
+  own 0.20-0.35 target).
+- **The Gaussian families were tuned by eye**, far past the MTF the config
+  cites: sigma 0.6-2.4 px HR == MTF 0.64 down to 0.0008 at the LR Nyquist
+  frequency. Measured medians were 0.049 and 0.063 against the MTF family's
+  0.265 — the three families disagreed with each other by about 15×.
+
+Poisson noise also reached a shot SNR of **3.5** at full signal where real
+WorldView-class PAN is ≥100, and JPEG was on by default — which models a
+delivery artifact that 16-bit archive PAN never has, and silently quantises the
+LR to 8 bits inside the stage whose job is preserving 16-bit depth.
+
+Net effect, measured on the UC Merced patches: the LR images sat **16.3 dB**
+from an ideal 2× resample with high-pass noise **15.8× the scene's own
+texture**. Models were being trained to undo synthetic noise and blur, so any
+PSNR gain over bicubic was inflated by that rather than by super-resolution.
+
+Every range is now stated in, or derived from, a physical quantity with the
+derivation in the config, and `degrade()` logs the full per-patch parameter set
+so a built dataset is auditable after the fact:
+
+```bash
+# config only (fast, no dataset needed)
+python data_pipeline/05_degrade/validate_degradation.py
+
+# full audit of a built dataset; non-zero exit if a check fails
+python data_pipeline/05_degrade/validate_degradation.py \
+    --manifest out/pairs/degradation_manifest.json --strict \
+    --report out/pairs/degradation_validation.md
+```
+
+It measures kernel MTF by FFT (no Gaussian assumption), summarises what the
+dataset recorded, and re-derives LR-vs-ideal-LR PSNR, noise level and spectrum
+from the written pairs. The corrected config scores **7/7**; the original
+scores **1/7**, and restoring the unit bug is caught by the
+family-self-consistency check.
 
 **Output format** (`configs/degradation.yaml` -> `output.format`):
 

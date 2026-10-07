@@ -20,6 +20,7 @@ installed (falls back to Markdown-only with a note otherwise).
 """
 import argparse
 import datetime as dt
+import json
 import sys
 from pathlib import Path
 
@@ -78,7 +79,69 @@ def md_table(headers, rows):
     return "\n".join(out)
 
 
-def build_markdown(results, n_test, device, comp, title):
+# ---------------- validity audits ----------------
+# PSNR/SSIM tables only mean something if the task, the labels and the split
+# are sound, and if the headline gain is attributable. Those four things are
+# measured by separate scripts that each write a .json sidecar; this pulls the
+# verdicts in so one document carries both the result and its validity, and so
+# a missing audit is visible as missing rather than silently absent.
+
+AUDITS = [
+    ("Degradation (stage 5)", "degradation_validation.json",
+     "data_pipeline/05_degrade/validate_degradation.py"),
+    ("Terrain labels (stage 4)", "label_quality.json",
+     "data_pipeline/04_labeling/label_quality_report.py"),
+    ("Split leakage (stage 6)", "split_leakage_audit.json",
+     "data_pipeline/06_package/audit_split_leakage.py"),
+]
+
+
+def load_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def collect_audits(search_dirs) -> list:
+    """[(name, status, detail, how_to_run)] for each validity audit."""
+    out = []
+    for name, filename, how in AUDITS:
+        found = None
+        for d in search_dirs:
+            if d and (Path(d) / filename).exists():
+                found = load_json(Path(d) / filename)
+                break
+        if found is None:
+            out.append((name, "NOT RUN", f"no {filename} found", how))
+            continue
+        verdicts = found.get("verdicts")
+        if verdicts:
+            failed = [v for v in verdicts if not v.get("passed")]
+            status = "PASS" if not failed else f"{len(failed)} FAILED"
+            detail = (f"{len(verdicts) - len(failed)}/{len(verdicts)} checks passed"
+                      + ("; " + "; ".join(v["check"] for v in failed) if failed else ""))
+        else:
+            # the label report has no pass/fail verdicts, it has findings
+            empty = found.get("empty_classes") or []
+            status = "REVIEW" if empty else "OK"
+            detail = (f"{found.get('n_labelled')}/{found.get('n_patches')} patches "
+                      f"labelled")
+            if empty:
+                detail += f"; classes with no patches: {', '.join(empty)}"
+        out.append((name, status, detail, how))
+    return out
+
+
+def load_ablation(search_dirs):
+    for d in search_dirs:
+        if d and (Path(d) / "ablation.json").exists():
+            return load_json(Path(d) / "ablation.json")
+    return None
+
+
+def build_markdown(results, n_test, device, comp, title, audits=None,
+                    ablation=None, ablation_expected=True):
     L = [f"# {title}", "",
          f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M}  ·  test patches: {n_test}  ·  device: {device}_",
          ""]
@@ -117,6 +180,52 @@ def build_markdown(results, n_test, device, comp, title):
                   md_table(["Terrain", "Δ PSNR (dB)", "Δ SSIM"],
                            [(idx, f"{r.dPSNR:+.3f}", f"{r.dSSIM:+.3f}") for idx, r in j.iterrows()]), ""]
 
+    if audits:
+        L += ["## Validity of these numbers", "",
+              "A PSNR table is only meaningful if the degradation defines a realistic",
+              "task, the terrain labels are sound, and the test split does not share",
+              "ground with training. Each is measured by its own audit:", "",
+              md_table(["Audit", "Status", "Detail"],
+                       [(n, st, d) for n, st, d, _ in audits]), ""]
+        missing = [(n, how) for n, st, _, how in audits if st == "NOT RUN"]
+        if missing:
+            L += ["Not run in this build - these results are unqualified until they are:", ""]
+            L += [f"- {n}: `python {how}`" for n, how in missing]
+            L.append("")
+
+    if ablation:
+        comps = ablation.get("comparisons", [])
+        floor = ablation.get("noise_floor_db")
+        L += ["## Ablation - what is the gain attributable to?", "",
+              f"Smallest interpretable PSNR difference: **{floor:.3f} dB** "
+              f"({ablation.get('noise_floor_source')}).", "",
+              md_table(["What it isolates", "Comparison", "dPSNR (dB)", "Verdict"],
+                       [(c["comparison"],
+                         f"{c.get('left','-')} - {c.get('right','-')}",
+                         (f"{c['delta_psnr_db']:+.3f}" if "delta_psnr_db" in c else "-"),
+                         c["status"]) for c in comps]), ""]
+        control = next((c for c in comps
+                        if c["comparison"] == "terrain information"), None)
+        if control and control["status"] == "not run":
+            L += ["> The shuffled-label control was not trained, so it is not yet",
+                  "> established that the gain comes from terrain information rather",
+                  "> than from the extra conditioning parameters and the composite",
+                  "> loss. Run `python training/run_ablation.py` before claiming a",
+                  "> terrain effect.", ""]
+        elif control:
+            L += [f"> Terrain-information control: the full model is "
+                  f"{control['delta_psnr_db']:+.3f} dB against an identically sized "
+                  f"model trained with permuted terrain labels - {control['status']}.", ""]
+    elif ablation_expected:
+        L += ["## Ablation", "",
+              "No ablation results found. Without it, a TerraSR-over-SwinIR gain",
+              "cannot be attributed to terrain: the same number would appear if it",
+              "came from the extra FiLM parameters or from the composite loss shape.",
+              "", "```bash", "python training/run_ablation.py",
+              "python evaluation/eval_ablation.py --runs-root checkpoints/ablation \\",
+              "    --test-csv data/dataset/test.csv --report data/dataset/ablation.md",
+              "```", ""]
+
     L += ["---",
           "_Note: numbers reflect the dataset and training configuration used for this run. "
           "Small-scale / few-epoch runs are for pipeline verification and are not "
@@ -126,7 +235,8 @@ def build_markdown(results, n_test, device, comp, title):
 
 # ---------------- DOCX ----------------
 
-def build_docx(results, n_test, device, comp, title, out_docx):
+def build_docx(results, n_test, device, comp, title, out_docx,
+                audits=None, ablation=None):
     try:
         from docx import Document
         from docx.shared import Pt, RGBColor
@@ -190,11 +300,32 @@ def build_docx(results, n_test, device, comp, title, out_docx):
             table(["Terrain", "Δ PSNR (dB)", "Δ SSIM"],
                   [(idx, f"{r.dPSNR:+.3f}", f"{r.dSSIM:+.3f}") for idx, r in j.iterrows()])
 
+    if audits:
+        doc.add_heading("Validity of these numbers", level=1)
+        doc.add_paragraph(
+            "A PSNR table is only meaningful if the degradation defines a "
+            "realistic task, the terrain labels are sound, and the test split "
+            "does not share ground with training.")
+        table(["Audit", "Status", "Detail"],
+              [(n, st, d) for n, st, d, _ in audits])
+
+    if ablation:
+        doc.add_heading("Ablation - what is the gain attributable to?", level=1)
+        doc.add_paragraph(
+            f"Smallest interpretable PSNR difference: "
+            f"{ablation.get('noise_floor_db'):.3f} dB "
+            f"({ablation.get('noise_floor_source')}).")
+        table(["What it isolates", "dPSNR (dB)", "Verdict"],
+              [(c["comparison"],
+                 (f"{c['delta_psnr_db']:+.3f}" if "delta_psnr_db" in c else "-"),
+                 c["status"]) for c in ablation.get("comparisons", [])])
+
     note = doc.add_paragraph()
     run = note.add_run("Note: numbers reflect the dataset and training configuration used for "
                        "this run. Small-scale / few-epoch runs are for pipeline verification "
                        "and are not representative benchmark results.")
     run.italic = True
+
     doc.save(out_docx)
     return True
 
@@ -212,19 +343,43 @@ def main():
     ap.add_argument("--title", default="TerraSR — Results Report")
     ap.add_argument("--out", required=True, type=Path,
                      help="output path WITHOUT extension (writes .md and .docx)")
+    ap.add_argument("--audit-dir", nargs="*", default=[], type=Path,
+                     help="extra directories to search for the validity audit "
+                          "sidecars (degradation_validation.json, label_quality.json, "
+                          "split_leakage_audit.json, ablation.json)")
+    ap.add_argument("--no-audits", action="store_true",
+                     help="omit the validity and ablation sections")
     args = ap.parse_args()
 
     results, n_test, device = compute_all(
         args.test_csv, args.terrain_config, args.checkpoints, args.with_bicubic, args.bicubic_scale)
     comp = dataset_composition(args.split_manifest)
 
+    # Look for the audit sidecars next to the dataset and the report, so a
+    # normal pipeline run picks them up with no extra flags.
+    search = list(args.audit_dir) + [
+        args.out.parent,
+        args.test_csv.parent,
+        args.test_csv.parent.parent / "patches",
+        args.test_csv.parent.parent / "pairs",
+    ]
+    audits = collect_audits(search) if not args.no_audits else None
+    ablation = load_ablation(search)
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     md_path = args.out.with_suffix(".md")
-    md_path.write_text(build_markdown(results, n_test, device, comp, args.title), encoding="utf-8")
+    md_path.write_text(build_markdown(results, n_test, device, comp, args.title,
+                                       audits=audits, ablation=ablation,
+                                       ablation_expected=not args.no_audits),
+                        encoding="utf-8")
     print(f"wrote {md_path}")
+    if audits:
+        for name, status, detail, _ in audits:
+            print(f"  audit: {name:<28}{status:<12}{detail}")
 
     docx_path = args.out.with_suffix(".docx")
-    if build_docx(results, n_test, device, comp, args.title, str(docx_path)):
+    if build_docx(results, n_test, device, comp, args.title, str(docx_path),
+                   audits=audits, ablation=ablation):
         print(f"wrote {docx_path}")
     else:
         print("python-docx not installed — wrote Markdown only "

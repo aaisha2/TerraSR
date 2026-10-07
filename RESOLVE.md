@@ -88,9 +88,26 @@ risk). If water/mountain are short, add targeted Maxar events to
 `configs/datasets.yaml` and re-run `--stages download,standardize` then
 `--skip download`.
 
-**Before trusting the LR for training** run the supervisor-required validation
-(stage 5) against real satellite LR reference chips and tune
-`configs/degradation.yaml` if needed:
+The data build validates itself as it goes, and `--strict` makes a failure stop
+the run rather than hand over a quietly invalid dataset:
+
+- **stage 4** writes `data/patches/label_quality.md` - support per terrain class
+  (naming any class with zero patches), purity/margin distributions, why patches
+  went unlabelled, DEM coverage, and the WorldCover-2021 vs imagery-date gap. It
+  also emits `label_qc_sample.csv` for manual verification, which is how a
+  human-checked label accuracy gets quoted rather than assumed.
+- **stage 5** writes `data/pairs/degradation_validation.md` - the realized blur
+  MTF measured by FFT, the noise level against the scene's own texture, and
+  LR-vs-ideal-LR PSNR, each against a threshold in `configs/degradation.yaml`.
+- **stage 6** writes `data/dataset/split_leakage_audit.md` - for every held-out
+  patch, the distance to the nearest *training* patch. It fails if any is closer
+  than a patch footprint, because that is the same ground in both sets.
+
+Read all three before training. If the split audit fails, the test numbers are
+not measuring generalisation.
+
+**To compare against real satellite LR** reference chips as well, run the
+supervisor-required comparison and tune `configs/degradation.yaml` if needed:
 
 ```bash
 python data_pipeline/05_degrade/validate_against_real_lr.py \
@@ -111,6 +128,13 @@ python scripts/prefetch_weights.py
 ---
 
 ## 5. Training + evaluation (stages 7–9)
+
+`run_pipeline.py --with-training` also runs the **stage 8 ablation** (7 extra
+training runs) and writes `data/dataset/ablation.md`. `--no-ablation` skips it,
+but note the cost: without the grid - above all without the
+`terrasr_shuffled_labels` control - a TerraSR-over-SwinIR gain cannot be
+attributed to terrain rather than to the extra FiLM parameters or the composite
+loss. See the ablation section in [README.md](README.md).
 
 Point the train configs at the built dataset (they default to
 `data/dataset/{train,val}.csv`, which is exactly what stage 6 produced) and

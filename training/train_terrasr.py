@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader
 
@@ -38,23 +39,103 @@ def make_loader(csv_path, terrain_index, cfg, train):
                       num_workers=cfg["train"]["num_workers"], drop_last=train)
 
 
+class PlainLoss(nn.Module):
+    """L1 (or MSE) behind the same (sr, hr, terrain_idx) -> (loss, components)
+    interface as TerrainAwareLoss, so the training loop does not branch and an
+    ablation can swap the loss by config alone."""
+    def __init__(self, kind="l1"):
+        super().__init__()
+        self.fn = nn.L1Loss() if kind == "l1" else nn.MSELoss()
+        self.kind = kind
+        self.use_perceptual = False
+
+    def forward(self, sr, hr, terrain_idx=None):
+        loss = self.fn(sr, hr)
+        return loss, {self.kind: loss.item()}
+
+
 def build_loss(cfg, terrain_index):
+    """Loss selected by `loss.mode`:
+        terrain_aware     (default) per-terrain edge/perceptual weights
+        l1 / mse          plain pixel loss - isolates the architecture
+        uniform_composite the SAME composite shape (L1 + SSIM + edge +
+                          perceptual) with every terrain given identical
+                          weights. This is the control that separates "the
+                          composite loss is better" from "weighting it per
+                          terrain is better" - without it, a gain from the
+                          terrain-aware loss cannot be attributed to terrain.
+    """
+    mode = (cfg["loss"].get("mode") or "terrain_aware").lower()
+    if mode in ("l1", "mse"):
+        return PlainLoss(mode)
+
     loss_cfg = yaml.safe_load(Path(cfg["loss"]["config"]).read_text())
     if cfg["loss"].get("disable_perceptual"):
         for w in loss_cfg["per_terrain"].values():
             w["perceptual"] = 0.0
         loss_cfg["default"]["perceptual"] = 0.0
+
+    if mode == "uniform_composite":
+        per_terrain = loss_cfg["per_terrain"]
+        n = len(per_terrain) or 1
+        mean_w = {k: sum(float(w[k]) for w in per_terrain.values()) / n
+                  for k in ("edge", "perceptual")}
+        loss_cfg["per_terrain"] = {t: dict(mean_w) for t in per_terrain}
+        loss_cfg["default"] = dict(mean_w)
+    elif mode != "terrain_aware":
+        raise ValueError(f"unknown loss.mode '{mode}'; expected terrain_aware, "
+                          f"uniform_composite, l1 or mse")
     return TerrainAwareLoss(loss_cfg, terrain_index)
 
 
+def is_conditioned(cfg) -> bool:
+    """Does this model take a terrain index? Explicit config wins; otherwise
+    it is the terrain-conditioned family."""
+    if "conditioned" in cfg["model"]:
+        return bool(cfg["model"]["conditioned"])
+    return str(cfg["model"]["name"]).lower().startswith("terrasr")
+
+
+def apply_label_mode(terrain_idx: torch.Tensor, mode: str) -> torch.Tensor:
+    """Ablation controls on the terrain labels themselves.
+
+        real      labels as the dataset gives them
+        shuffled  permuted within the batch - the label distribution and the
+                  model capacity are identical, but a patch no longer gets ITS
+                  OWN terrain. This is the control that decides whether the
+                  terrain-conditioned model gains from terrain INFORMATION or
+                  merely from the extra FiLM parameters and the composite
+                  loss. If `terrasr_full` does not beat this, the conditioning
+                  is not doing what the project claims.
+        unknown    every sample routed to the unknown-terrain row: the
+                  conditioning path and its parameters stay, but carry no
+                  per-sample signal at all.
+    """
+    if mode == "real":
+        return terrain_idx
+    if mode == "unknown":
+        return torch.full_like(terrain_idx, -1)
+    if mode == "shuffled":
+        perm = torch.randperm(terrain_idx.shape[0], device=terrain_idx.device)
+        return terrain_idx[perm]
+    raise ValueError(f"unknown data.terrain_label_mode '{mode}'; expected "
+                      f"real, shuffled or unknown")
+
+
+def forward_sr(model, lr, terrain_idx, conditioned: bool):
+    return model(lr, terrain_idx) if conditioned else model(lr)
+
+
 @torch.no_grad()
-def validate(model, loader, device):
+def validate(model, loader, device, conditioned=True, label_mode="real"):
     model.eval()
     meter = AverageMeter()
     for lr, hr, terrain_idx, _ in loader:
         lr, hr = lr.to(device), hr.to(device)
-        terrain_idx = terrain_idx.to(device)
-        sr = model(lr, terrain_idx)
+        # validation uses the same label treatment as training, so a shuffled
+        # or unknown-label run is measured under its own conditions
+        terrain_idx = apply_label_mode(terrain_idx.to(device), label_mode)
+        sr = forward_sr(model, lr, terrain_idx, conditioned)
         meter.update(psnr(sr, hr), n=lr.size(0))
     return meter.avg
 
@@ -78,6 +159,9 @@ def train(cfg, fresh=False):
 
     criterion = build_loss(cfg, terrain_index).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg["train"]["lr"])
+    conditioned = is_conditioned(cfg)
+    label_mode = (cfg["data"].get("terrain_label_mode") or "real").lower()
+    apply_label_mode(torch.zeros(2, dtype=torch.long), label_mode)   # fail fast
 
     extra = {"model_name": cfg["model"]["name"], "config": cfg}
 
@@ -95,9 +179,13 @@ def train(cfg, fresh=False):
         resumed = True
 
     banner = [
-        f"model      : {cfg['model']['name']}  ({n_params/1e6:.2f}M params)",
-        f"loss       : terrain-aware "
+        f"model      : {cfg['model']['name']}  ({n_params/1e6:.2f}M params)"
+        f"  conditioning={'on' if conditioned else 'off'}",
+        f"loss       : {(cfg['loss'].get('mode') or 'terrain_aware')} "
         f"(perceptual={'on' if criterion.use_perceptual else 'off'})",
+        f"labels     : {label_mode}"
+        + ("   <- ABLATION CONTROL: labels carry no per-sample terrain signal"
+           if label_mode != "real" else ""),
         f"device     : {device}",
         f"data       : {len(train_loader.dataset)} train / "
         f"{len(val_loader.dataset)} val patches, batch {cfg['train']['batch_size']}"
@@ -132,9 +220,9 @@ def train(cfg, fresh=False):
         last_components = {}
         for i, (lr, hr, terrain_idx, _) in enumerate(train_loader, start=1):
             lr, hr = lr.to(device), hr.to(device)
-            terrain_idx = terrain_idx.to(device)
+            terrain_idx = apply_label_mode(terrain_idx.to(device), label_mode)
             optimizer.zero_grad()
-            sr = model(lr, terrain_idx)
+            sr = forward_sr(model, lr, terrain_idx, conditioned)
             loss, components = criterion(sr, hr, terrain_idx)
             loss.backward()
             optimizer.step()
@@ -145,7 +233,7 @@ def train(cfg, fresh=False):
         comp_str = " ".join(f"{k}={v:.3f}" for k, v in last_components.items())
         val_psnr, is_best = None, False
         if epoch % cfg["train"]["val_every"] == 0:
-            val_psnr = validate(model, val_loader, device)
+            val_psnr = validate(model, val_loader, device, conditioned, label_mode)
             if val_psnr > best_psnr:                       # best.pth: only on improvement
                 best_psnr = val_psnr
                 is_best = True
