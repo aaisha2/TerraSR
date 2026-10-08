@@ -26,6 +26,7 @@ Usage:
     python make_lr_hr_pairs.py --manifest out/patches/patch_manifest_labeled.json --out-dir out/pairs
 """
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -41,6 +42,26 @@ import patch_io as pio  # noqa: E402
 
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 SAVE_EVERY = 500
+
+# Config sections that change the LR pixels. `validation` is excluded: its
+# thresholds judge the output, they do not produce it.
+FINGERPRINT_KEYS = ("scale_factor", "blur", "downsample", "noise",
+                     "compression", "output", "seed")
+
+
+def degradation_fingerprint(cfg: dict) -> str:
+    """A short, stable hash of every config value that affects the LR output.
+
+    Stage 5 resumes by skipping pairs whose files already exist, which silently
+    keeps stale data when the degradation parameters change underneath it: on
+    Colab, 21,791 pairs built with the pre-2026-10 (over-strong) config were
+    reused unchanged after the config was corrected, and only the validator
+    noticed. Recording this per pair lets a resume tell "already done" apart
+    from "done differently", the same way stage 3 compares its patchify
+    settings before reusing a scene."""
+    subset = {k: cfg.get(k) for k in FINGERPRINT_KEYS}
+    blob = json.dumps(subset, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
 def atomic_write_json(path: Path, obj) -> None:
@@ -146,12 +167,29 @@ def main():
 
     process = process_geotiff if out_format == "geotiff" else process_png
 
-    # pairs completed by an earlier (possibly interrupted) run
-    previous = {}
+    fingerprint = degradation_fingerprint(cfg)
+
+    # Pairs completed by an earlier (possibly interrupted) run. A pair is only
+    # reusable if its files exist AND it was produced by this degradation
+    # config - otherwise the dataset would mix parameters, or silently keep
+    # pairs built before the config was corrected.
+    previous, n_stale = {}, 0
     if manifest_path.exists() and not args.fresh:
         for r in json.loads(manifest_path.read_text()):
-            if Path(r["hr_path"]).exists() and Path(r["lr_path"]).exists():
-                previous[r["id"]] = r
+            if not r or not (Path(r["hr_path"]).exists() and Path(r["lr_path"]).exists()):
+                continue
+            if r.get("config_fingerprint") != fingerprint:
+                n_stale += 1
+                continue
+            previous[r["id"]] = r
+
+    if n_stale:
+        print(f"{n_stale} existing pair(s) were generated with a DIFFERENT "
+              f"degradation config and will be regenerated.")
+        print(f"  current config fingerprint: {fingerprint} ({args.config})")
+        print("  Reusing them would mix degradation parameters inside one "
+              "dataset, so the LR images are rewritten in place. HR is a "
+              "lossless copy and does not change.", flush=True)
 
     items = list(collect_hr_items(args))
     if not items:
@@ -169,6 +207,7 @@ def main():
 
     for n, (slot, out_id, hr_src) in enumerate(todo, 1):
         row = process(hr_src, out_id, hr_out, lr_out, cfg, pair_rng(seed, out_id, shared_rng))
+        row["config_fingerprint"] = fingerprint
         manifest[slot] = row
         if args.verbose:
             print(f"  {out_id}: HR {row['hr_shape']} -> LR {row['lr_shape']} "
@@ -178,8 +217,11 @@ def main():
             print(f"  progress saved: {n_reused + n}/{len(items)} pairs", flush=True)
 
     atomic_write_json(manifest_path, manifest)
-    print(f"\nwrote {len(todo)} new pairs, reused {n_reused} ({out_format}) -> {args.out_dir}")
+    print(f"\nwrote {len(todo)} new pairs"
+          + (f" ({n_stale} of them regenerated after a config change)" if n_stale else "")
+          + f", reused {n_reused} ({out_format}) -> {args.out_dir}")
     print(f"manifest -> {manifest_path}")
+    print(f"degradation config fingerprint: {fingerprint}")
 
 
 if __name__ == "__main__":

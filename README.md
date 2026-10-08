@@ -163,7 +163,7 @@ command to continue — useful on Colab, and after a crash or power cut:
 | 2 standardize | scenes already converted |
 | 3 patchify | finished scenes (`<out>/_scene_manifests/`) and patches already on disk |
 | 4 WorldCover labelling | patches already labelled (progress saved every 500) |
-| 5 LR/HR pairs | pairs already written (progress saved every 500) |
+| 5 LR/HR pairs | pairs already written **whose degradation config still matches** (progress saved every 500) |
 | 7–8 training | resumes from `last.pth` (the startup banner reports from where) |
 
 All outputs are written to a temporary name and renamed when complete, so an
@@ -174,6 +174,15 @@ size (the whole-scene reads it replaced needed 6+ GB for a SpaceNet mosaic).
 When `configs/degradation.yaml` sets a `seed`, each LR/HR pair uses its own
 RNG derived from the seed and patch id, so a resumed stage 5 produces exactly
 the same pairs as an uninterrupted run.
+
+Stage 5 also stamps every pair with a short fingerprint of the degradation
+config that produced it, and reuses a pair on resume only if that fingerprint
+still matches. Without this, resume cannot tell *"already done"* from *"done
+differently"*: on Colab, 21,791 pairs built with the pre-2026-10 (over-strong)
+config were reused unchanged after the config was corrected, and only
+`validate_degradation.py` noticed. A config change now regenerates the affected
+pairs instead of silently keeping them, so one dataset can never mix
+degradation parameters.
 
 ## Stage 4 — terrain labeling
 

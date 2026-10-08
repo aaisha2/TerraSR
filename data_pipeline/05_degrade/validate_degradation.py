@@ -180,9 +180,15 @@ def check_recorded_params(rows: list) -> dict:
                                             "median": float(np.median(snr)),
                                             "max": float(snr.max())}
     if families.get("unrecorded"):
-        out["warning"] = (f"{families['unrecorded']} pair(s) carry no blur parameters — "
+        out["warning"] = (f"{families['unrecorded']} pair(s) carry no blur parameters - "
                           f"they were generated before stage 5 logged them. Re-run "
-                          f"stage 5 with --fresh to make the dataset auditable.")
+                          f"stage 5 to regenerate them against the current config.")
+
+    # Which config actually produced this dataset? Stage 5 stamps each pair
+    # with a fingerprint of the output-affecting config, so a dataset built
+    # before a config change is identifiable instead of merely suspicious.
+    prints = Counter(r.get("config_fingerprint") or "unstamped" for r in rows)
+    out["config_fingerprints"] = dict(prints)
     return out
 
 
@@ -242,10 +248,27 @@ def check_measured_pairs(rows: list, scale: int, n=N_PAIR_SAMPLES, seed=0) -> di
 # --------------------------------------------------------------------------
 # verdicts
 # --------------------------------------------------------------------------
-def evaluate(cfg: dict, kernel: dict, measured: dict | None) -> list:
+def evaluate(cfg: dict, kernel: dict, measured: dict | None,
+              recorded: dict | None = None, expected_fingerprint: str = None) -> list:
     """Returns a list of (name, passed, detail) verdicts."""
     v = cfg.get("validation") or {}
     out = []
+
+    # Check this FIRST: if the dataset was not built by the config being
+    # validated, every measurement below describes a different dataset than
+    # the one the config describes, and that is the finding.
+    if recorded and expected_fingerprint:
+        prints = recorded.get("config_fingerprints") or {}
+        matching = prints.get(expected_fingerprint, 0)
+        total = recorded.get("n_pairs", 0)
+        others = {k: n for k, n in prints.items() if k != expected_fingerprint}
+        out.append(("dataset was built by this config", not others,
+                    (f"all {total} pair(s) carry the current fingerprint "
+                     f"{expected_fingerprint}")
+                    if not others else
+                    (f"{total - matching}/{total} pair(s) were built with a "
+                     f"different degradation config ({others}); re-run stage 5 "
+                     f"- it regenerates pairs whose fingerprint does not match")))
 
     lo, hi = v.get("expected_nyquist_mtf_range", [0.0, 1.0])
     ok = lo <= kernel["mtf_p05"] and kernel["mtf_p95"] <= hi
@@ -399,7 +422,12 @@ def main():
         recorded = check_recorded_params(rows)
         measured = check_measured_pairs(rows, cfg["scale_factor"], n=args.pair_samples)
 
-    verdicts = evaluate(cfg, kernel, measured)
+    # the fingerprint of the config we are validating against, so a dataset
+    # built by a different one is reported as such rather than just failing
+    sys.path.insert(0, str(Path(__file__).parent))
+    from make_lr_hr_pairs import degradation_fingerprint  # noqa: E402
+    expected = degradation_fingerprint(cfg)
+    verdicts = evaluate(cfg, kernel, measured, recorded, expected)
 
     print(f"{'check':<42}{'result':<8}detail")
     print("-" * 100)
@@ -411,6 +439,9 @@ def main():
     if recorded:
         print(f"\nrecorded over {recorded['n_pairs']} pairs: "
               f"blur {recorded['blur_families']}, jpeg {recorded['jpeg']}")
+        print(f"  config fingerprints in the dataset: "
+              f"{recorded.get('config_fingerprints')}   "
+              f"(current config: {expected})")
         if "warning" in recorded:
             print(f"  WARNING: {recorded['warning']}")
     if measured and measured.get("n_sampled"):
