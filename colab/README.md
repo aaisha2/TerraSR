@@ -113,6 +113,22 @@ Colab disconnects idle browser tabs and caps session length (limits vary by tier
 | Section 6, runtime recycled (local disk empty) | Re-run Sections 0–6. Scenes re-download from AWS; nothing half-finished is ever reused because every file is written atomically. |
 | Section 11 (training) | Re-run Sections 0–4, **Section 4b** (restore dataset), then Section 11. Each model resumes from its last completed epoch; finished models are skipped. Run **Section 11b** first to see exactly how far each model got. |
 
+### `ModuleNotFoundError: No module named 'colab_utils'`
+
+The runtime was recycled and `/content` was wiped, so `/content/TerraSR` no
+longer exists — the cell you ran is from Section 6 or later, which needs the
+repo. **Re-run Sections 0–4 from the top**, then return to the cell you were on.
+
+Every cell that needs the repo now checks for it first and says this, instead of
+failing with a bare import error eight cells away from the cause.
+
+Section 2 also verifies that the checkout *is* `origin/master` rather than
+trusting `git pull`'s output: a clone that is behind, ahead or diverged is
+re-synced automatically when the working tree is clean, and if you have
+uncommitted edits it stops and tells you rather than discarding them. (The
+previous version ignored the pull's exit code and printed "Up to date."
+regardless, so a stale checkout looked healthy.)
+
 How each stage resumes:
 - **standardize** skips scenes already converted
 - **patchify** skips finished scenes (recorded in `data/patches/_scene_manifests/`) and patches already on disk
