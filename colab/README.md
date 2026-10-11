@@ -124,10 +124,29 @@ failing with a bare import error eight cells away from the cause.
 
 Section 2 also verifies that the checkout *is* `origin/master` rather than
 trusting `git pull`'s output: a clone that is behind, ahead or diverged is
-re-synced automatically when the working tree is clean, and if you have
-uncommitted edits it stops and tells you rather than discarding them. (The
-previous version ignored the pull's exit code and printed "Up to date."
-regardless, so a stale checkout looked healthy.)
+re-synced automatically, and it stops only when updating would destroy local
+work — a modified tracked file, or an untracked file that `origin` also
+provides. (The previous version ignored the pull's exit code and printed
+"Up to date." regardless, so a stale checkout looked healthy.)
+
+The notebook's own outputs — the `checkpoints` symlink to Drive, `data/`,
+reports — are untracked and never block an update. `git reset --hard` does not
+touch untracked paths that the target commit lacks, so they are not at risk.
+
+### `Cannot update: ... AND has uncommitted changes: ?? checkpoints`
+
+Fixed in `869ec02`+. `?? checkpoints` was the notebook's own Drive symlink, not
+an edit of yours: the update guard was checking `git status --porcelain`, which
+lists untracked paths too. `.gitignore` also had `checkpoints/` with a trailing
+slash, which matches directories only — and on Colab `checkpoints` is a
+*symlink*, which git treats as a file, so the pattern missed it.
+
+If you are stuck on a checkout from before that fix, one command gets you past
+it (nothing of yours is tracked in the repo, so nothing is lost):
+
+```bash
+!cd /content/TerraSR && git fetch origin master && git reset --hard FETCH_HEAD
+```
 
 How each stage resumes:
 - **standardize** skips scenes already converted

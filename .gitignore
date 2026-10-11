@@ -26,10 +26,15 @@ previews/
 outputs/
 temp/
 
-# training artifacts
-checkpoints/
-runs/
-logs/
+# training artifacts.
+# No trailing slash: the Colab notebook replaces these with SYMLINKS to Drive,
+# and git treats a symlink as a file, so a `checkpoints/` pattern (directories
+# only) misses it and the symlink shows up as an untracked file. Verified:
+# `checkpoints/` ignores a directory named checkpoints but not a symlink of the
+# same name; `checkpoints` ignores both.
+checkpoints
+runs
+logs
 *.pth
 *.pt
 *.ckpt
