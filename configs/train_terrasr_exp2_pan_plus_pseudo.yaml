@@ -20,6 +20,9 @@ model:
   window_size: 8
   num_terrains: 7
   embed_dim_terrain: 32
+  # Full-size TerraSR at batch 16: without this the stored attention
+  # activations exceed a 15 GB GPU (see configs/train_terrasr.yaml).
+  use_checkpoint: true
 data:
   train_csv: data/dataset/train.csv
   val_csv: data/dataset/val.csv
@@ -38,4 +41,6 @@ train:
   seed: 42
   val_every: 1
   log_every: 50          # print a progress line every N batches within an epoch
+  amp: true
+  grad_accum: 1
   out_dir: checkpoints/exp2_pan_plus_pseudo/terrasr
