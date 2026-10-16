@@ -15,6 +15,8 @@ import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 def window_partition(x, window_size):
@@ -55,26 +57,60 @@ class WindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=True)
         self.proj = nn.Linear(dim, dim)
         nn.init.trunc_normal_(self.relative_position_bias_table, std=0.02)
-        self.softmax = nn.Softmax(dim=-1)
+
+    def _rel_pos_bias(self, n):
+        """(num_heads, n, n) relative-position bias for one window."""
+        bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
+        return bias.view(n, n, -1).permute(2, 0, 1).contiguous()
 
     def forward(self, x, mask=None):
+        """Attention over windows.
+
+        The (batch*num_windows, heads, n, n) score matrix is what makes this
+        model expensive here: a 256px HR patch is a 128px LR patch = 256
+        windows, so batch 8 gives 2048 windows and ONE score matrix is 192 MiB
+        in fp32 - which autograd then keeps, twice (pre- and post-softmax),
+        for each of the 24 Swin blocks. Measured: 13.4 GiB of stored
+        activations, on a 15 GB T4.
+
+        Two things reduce it. Here, scaled_dot_product_attention: where a
+        fused kernel is selected it never writes the score matrix out. Note
+        that the relative-position bias is a learnable Parameter, so PyTorch
+        may still fall back to the math kernel - SDPA is a win when it
+        applies, not a guarantee. The guarantee is RSTB's use_checkpoint
+        (13.4 -> 1.1 GiB measured), which is on by default in the configs.
+
+        The additive bias/mask is kept on a (1, num_windows, heads, n, n)
+        axis and broadcast over the batch, so the mask itself is never
+        expanded to the full window count.
+        """
         b_, n, c = x.shape
         qkv = self.qkv(x).reshape(b_, n, 3, self.num_heads, c // self.num_heads)
         qkv = qkv.permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        q, k, v = qkv[0], qkv[1], qkv[2]          # (b_, heads, n, head_dim)
 
-        attn = (q * self.scale) @ k.transpose(-2, -1)
-        bias = self.relative_position_bias_table[self.relative_position_index.view(-1)]
-        bias = bias.view(n, n, -1).permute(2, 0, 1).contiguous()
-        attn = attn + bias.unsqueeze(0)
+        bias = self._rel_pos_bias(n)              # (heads, n, n)
 
-        if mask is not None:
+        if mask is None:
+            attn_bias = bias.unsqueeze(0).to(q.dtype)          # (1, heads, n, n)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias,
+                                                 scale=self.scale)
+        else:
+            # shifted windows: the mask varies per window but not per image,
+            # so attend with an explicit window axis and let it broadcast.
             nw = mask.shape[0]
-            attn = attn.view(b_ // nw, nw, self.num_heads, n, n) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, n, n)
-        attn = self.softmax(attn)
+            b = b_ // nw
+            hd = c // self.num_heads
+            attn_bias = (bias.unsqueeze(0) + mask.unsqueeze(1)).unsqueeze(0)
+            attn_bias = attn_bias.to(q.dtype)                  # (1, nw, heads, n, n)
+            q = q.view(b, nw, self.num_heads, n, hd)
+            k = k.view(b, nw, self.num_heads, n, hd)
+            v = v.view(b, nw, self.num_heads, n, hd)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_bias,
+                                                 scale=self.scale)
+            out = out.reshape(b_, self.num_heads, n, hd)
 
-        x = (attn @ v).transpose(1, 2).reshape(b_, n, c)
+        x = out.transpose(1, 2).reshape(b_, n, c)
         return self.proj(x)
 
 
@@ -89,10 +125,19 @@ class SwinTransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         hidden = int(dim * mlp_ratio)
         self.mlp = nn.Sequential(nn.Linear(dim, hidden), nn.GELU(), nn.Linear(hidden, dim))
+        # plain dict, not a buffer: derived from the input size, and keeping it
+        # out of state_dict means old checkpoints still load
+        self._mask_cache = {}
 
     def _attn_mask(self, h, w, device):
+        """Cached: the mask depends only on (h, w), not on the data, so
+        rebuilding it on every block of every iteration was pure overhead."""
         if self.shift_size == 0:
             return None
+        key = (h, w, str(device))
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached
         img_mask = torch.zeros((1, h, w, 1), device=device)
         slices = (slice(0, -self.window_size), slice(-self.window_size, -self.shift_size),
                   slice(-self.shift_size, None))
@@ -104,6 +149,7 @@ class SwinTransformerBlock(nn.Module):
         mask_windows = window_partition(img_mask, self.window_size).view(-1, self.window_size ** 2)
         attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
         attn_mask = attn_mask.masked_fill(attn_mask != 0, -100.0).masked_fill(attn_mask == 0, 0.0)
+        self._mask_cache[key] = attn_mask
         return attn_mask
 
     def forward(self, x, x_size):
@@ -133,8 +179,10 @@ class RSTB(nn.Module):
     """Residual Swin Transformer Block: a stack of Swin blocks (alternating
     regular/shifted windows) + a conv, with a residual connection. This is the
     unit stage 8 will condition on terrain."""
-    def __init__(self, dim, depth, num_heads, window_size, mlp_ratio=2.0):
+    def __init__(self, dim, depth, num_heads, window_size, mlp_ratio=2.0,
+                 use_checkpoint=False):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
                 dim, num_heads, window_size,
@@ -148,7 +196,12 @@ class RSTB(nn.Module):
         b, _, c = x.shape
         shortcut = x
         for blk in self.blocks:
-            x = blk(x, x_size)
+            if self.use_checkpoint and self.training:
+                # trades ~30% step time for holding only one block's
+                # activations at a time - the knob for small-VRAM GPUs
+                x = checkpoint(blk, x, x_size, use_reentrant=False)
+            else:
+                x = blk(x, x_size)
         x = x.transpose(1, 2).view(b, c, h, w)
         x = self.conv(x).flatten(2).transpose(1, 2)
         return x + shortcut
@@ -165,13 +218,14 @@ class Upsample(nn.Sequential):
 class SwinIR(nn.Module):
     def __init__(self, scale_factor=2, num_channels=1, embed_dim=60,
                  depths=(6, 6, 6, 6), num_heads=(6, 6, 6, 6), window_size=8,
-                 mlp_ratio=2.0):
+                 mlp_ratio=2.0, use_checkpoint=False):
         super().__init__()
         self.window_size = window_size
         self.conv_first = nn.Conv2d(num_channels, embed_dim, 3, padding=1)
         self.norm_pre = nn.LayerNorm(embed_dim)
         self.layers = nn.ModuleList([
-            RSTB(embed_dim, depths[i], num_heads[i], window_size, mlp_ratio)
+            RSTB(embed_dim, depths[i], num_heads[i], window_size, mlp_ratio,
+                 use_checkpoint=use_checkpoint)
             for i in range(len(depths))])
         self.norm = nn.LayerNorm(embed_dim)
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, padding=1)
@@ -218,4 +272,5 @@ def build_model(cfg=None):
         depths=tuple(cfg.get("depths", (6, 6, 6, 6))),
         num_heads=tuple(cfg.get("num_heads", (6, 6, 6, 6))),
         window_size=cfg.get("window_size", 8),
-        mlp_ratio=cfg.get("mlp_ratio", 2.0))
+        mlp_ratio=cfg.get("mlp_ratio", 2.0),
+        use_checkpoint=cfg.get("use_checkpoint", False))

@@ -13,6 +13,11 @@ model:
   window_size: 8
   num_features: 64        # srgan
   num_blocks: 16          # srgan
+  # Swin only. Recomputes each Swin block's activations in the backward pass
+  # instead of storing all 24 of them: ~30% slower per step, but it is the
+  # difference between fitting and OOM-ing on a 15 GB T4. Turn off on an
+  # A100/L4 for the speed.
+  use_checkpoint: true
 
 data:
   # per-split CSVs from stage 6 (split_train_val_test.py)
@@ -31,6 +36,12 @@ train:
   seed: 42
   val_every: 1           # epochs
   log_every: 50          # print a progress line every N batches within an epoch
+  amp: true              # mixed precision on CUDA — halves activation memory
+  # Micro-batches per optimiser step. batch_size*grad_accum is what the
+  # optimiser sees, so a 15 GB GPU can keep the same EFFECTIVE batch (and
+  # therefore a matched comparison) as a 40 GB one by halving batch_size and
+  # doubling this.
+  grad_accum: 1
   out_dir: checkpoints/swinir_baseline
 
 # SRGAN-only: when model.name == srgan, also train adversarially if true

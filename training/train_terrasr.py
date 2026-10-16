@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import models  # noqa: E402
 from models.losses.terrain_aware_loss import TerrainAwareLoss  # noqa: E402
 from terrasr_data import TerraSRDataset, load_terrain_index  # noqa: E402
-from training.train_baseline import apply_overrides  # noqa: E402
+from training.train_baseline import amp_enabled, apply_overrides  # noqa: E402
 from training.train_utils import (AverageMeter, ProgressReporter, get_device,  # noqa: E402
                                     load_checkpoint, psnr, restore_rng_state,
                                     save_checkpoint, set_seed)
@@ -127,7 +127,7 @@ def forward_sr(model, lr, terrain_idx, conditioned: bool):
 
 
 @torch.no_grad()
-def validate(model, loader, device, conditioned=True, label_mode="real"):
+def validate(model, loader, device, conditioned=True, label_mode="real", amp=False):
     model.eval()
     meter = AverageMeter()
     for lr, hr, terrain_idx, _ in loader:
@@ -135,8 +135,9 @@ def validate(model, loader, device, conditioned=True, label_mode="real"):
         # validation uses the same label treatment as training, so a shuffled
         # or unknown-label run is measured under its own conditions
         terrain_idx = apply_label_mode(terrain_idx.to(device), label_mode)
-        sr = forward_sr(model, lr, terrain_idx, conditioned)
-        meter.update(psnr(sr, hr), n=lr.size(0))
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+            sr = forward_sr(model, lr, terrain_idx, conditioned)
+        meter.update(psnr(sr.float(), hr), n=lr.size(0))
     return meter.avg
 
 
@@ -159,6 +160,11 @@ def train(cfg, fresh=False):
 
     criterion = build_loss(cfg, terrain_index).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg["train"]["lr"])
+    # the flag lives in the shared config but only the Swin models honour it
+    uses_checkpoint = any(getattr(m, "use_checkpoint", False) for m in model.modules())
+    amp = amp_enabled(cfg, device)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    accum = max(1, int(cfg["train"].get("grad_accum", 1)))
     conditioned = is_conditioned(cfg)
     label_mode = (cfg["data"].get("terrain_label_mode") or "real").lower()
     apply_label_mode(torch.zeros(2, dtype=torch.long), label_mode)   # fail fast
@@ -176,6 +182,8 @@ def train(cfg, fresh=False):
         start_epoch = ckpt["epoch"] + 1
         best_psnr = ckpt.get("best_metric", -1.0)
         restore_rng_state(ckpt.get("rng_state"))
+        if amp and ckpt.get("scaler_state"):
+            scaler.load_state_dict(ckpt["scaler_state"])
         resumed = True
 
     banner = [
@@ -189,7 +197,10 @@ def train(cfg, fresh=False):
         f"device     : {device}",
         f"data       : {len(train_loader.dataset)} train / "
         f"{len(val_loader.dataset)} val patches, batch {cfg['train']['batch_size']}"
-        f" -> {len(train_loader)} batches/epoch",
+        + (f" x{accum} accum (effective {cfg['train']['batch_size']*accum})" if accum > 1 else "")
+        + f" -> {len(train_loader)} batches/epoch",
+        f"precision  : {'mixed (fp16)' if amp else 'fp32'}"
+        + ("   grad-checkpointing on" if uses_checkpoint else ""),
         f"out_dir    : {out_dir}",
     ]
     if resumed:
@@ -218,14 +229,18 @@ def train(cfg, fresh=False):
         model.train()
         loss_meter = AverageMeter()
         last_components = {}
+        optimizer.zero_grad(set_to_none=True)
         for i, (lr, hr, terrain_idx, _) in enumerate(train_loader, start=1):
             lr, hr = lr.to(device), hr.to(device)
             terrain_idx = apply_label_mode(terrain_idx.to(device), label_mode)
-            optimizer.zero_grad()
-            sr = forward_sr(model, lr, terrain_idx, conditioned)
-            loss, components = criterion(sr, hr, terrain_idx)
-            loss.backward()
-            optimizer.step()
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+                sr = forward_sr(model, lr, terrain_idx, conditioned)
+                loss, components = criterion(sr, hr, terrain_idx)
+            scaler.scale(loss / accum).backward()
+            if i % accum == 0 or i == n_batches:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
             loss_meter.update(loss.item(), n=lr.size(0))
             last_components = components
             rep.batch(i, loss_meter.avg)
@@ -233,13 +248,14 @@ def train(cfg, fresh=False):
         comp_str = " ".join(f"{k}={v:.3f}" for k, v in last_components.items())
         val_psnr, is_best = None, False
         if epoch % cfg["train"]["val_every"] == 0:
-            val_psnr = validate(model, val_loader, device, conditioned, label_mode)
+            val_psnr = validate(model, val_loader, device, conditioned, label_mode, amp=amp)
             if val_psnr > best_psnr:                       # best.pth: only on improvement
                 best_psnr = val_psnr
                 is_best = True
                 save_checkpoint(out_dir / "best.pth", model, optimizer, epoch, best_psnr, extra=extra)
         # last.pth: EVERY epoch, so training can resume exactly where it stopped
-        save_checkpoint(last_path, model, optimizer, epoch, best_psnr, extra=extra)
+        save_checkpoint(last_path, model, optimizer, epoch, best_psnr,
+                        extra={**extra, "scaler_state": scaler.state_dict()})
         rep.end_epoch(epoch, loss_meter.avg, val_psnr=val_psnr,
                       best_psnr=best_psnr, is_best=is_best, notes=comp_str)
 

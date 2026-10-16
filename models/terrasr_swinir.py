@@ -16,6 +16,7 @@ import math
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from .swinir_baseline import RSTB, SwinTransformerBlock, Upsample
 
@@ -44,8 +45,9 @@ class ConditionedRSTB(nn.Module):
     then modulates the result by the terrain-derived (gamma, beta) before the
     residual add."""
     def __init__(self, dim, depth, num_heads, window_size, mlp_ratio,
-                 embed_dim_terrain):
+                 embed_dim_terrain, use_checkpoint=False):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
                 dim, num_heads, window_size,
@@ -60,7 +62,10 @@ class ConditionedRSTB(nn.Module):
         b, _, c = x.shape
         shortcut = x
         for blk in self.blocks:
-            x = blk(x, x_size)
+            if self.use_checkpoint and self.training:
+                x = checkpoint(blk, x, x_size, use_reentrant=False)
+            else:
+                x = blk(x, x_size)
         x = x.transpose(1, 2).view(b, c, h, w)
         x = self.conv(x)
 
@@ -74,7 +79,8 @@ class ConditionedRSTB(nn.Module):
 class TerraSRSwinIR(nn.Module):
     def __init__(self, scale_factor=2, num_channels=1, embed_dim=60,
                  depths=(6, 6, 6, 6), num_heads=(6, 6, 6, 6), window_size=8,
-                 mlp_ratio=2.0, num_terrains=7, embed_dim_terrain=32):
+                 mlp_ratio=2.0, num_terrains=7, embed_dim_terrain=32,
+                 use_checkpoint=False):
         super().__init__()
         self.window_size = window_size
         # +1 row for unknown/unlabeled terrain (index == num_terrains)
@@ -85,7 +91,8 @@ class TerraSRSwinIR(nn.Module):
         self.norm_pre = nn.LayerNorm(embed_dim)
         self.layers = nn.ModuleList([
             ConditionedRSTB(embed_dim, depths[i], num_heads[i], window_size,
-                            mlp_ratio, embed_dim_terrain)
+                            mlp_ratio, embed_dim_terrain,
+                            use_checkpoint=use_checkpoint)
             for i in range(len(depths))])
         self.norm = nn.LayerNorm(embed_dim)
         self.conv_after_body = nn.Conv2d(embed_dim, embed_dim, 3, padding=1)
@@ -143,4 +150,5 @@ def build_model(cfg=None):
         window_size=cfg.get("window_size", 8),
         mlp_ratio=cfg.get("mlp_ratio", 2.0),
         num_terrains=cfg.get("num_terrains", 7),
-        embed_dim_terrain=cfg.get("embed_dim_terrain", 32))
+        embed_dim_terrain=cfg.get("embed_dim_terrain", 32),
+        use_checkpoint=cfg.get("use_checkpoint", False))

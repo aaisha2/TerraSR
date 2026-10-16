@@ -51,14 +51,26 @@ def make_loader(csv_path, terrain_index, split, cfg, train):
                       num_workers=cfg["train"]["num_workers"], drop_last=train)
 
 
+def amp_enabled(cfg, device) -> bool:
+    """Mixed precision, on by default on CUDA.
+
+    The Swin models hold ~24 blocks of attention activations; in fp32 at the
+    project's 256px patches that does not fit a 15 GB T4. Halving the
+    activations is what makes batch 8+ possible there, and it is also ~2x
+    faster on tensor cores. Set train.amp=false to force fp32."""
+    return bool(cfg["train"].get("amp", True)) and device.type == "cuda"
+
+
 @torch.no_grad()
-def validate(model, loader, device):
+def validate(model, loader, device, amp=False):
     model.eval()
     meter = AverageMeter()
     for lr, hr, _, _ in loader:
         lr, hr = lr.to(device), hr.to(device)
-        sr = model(lr)
-        meter.update(psnr(sr, hr), n=lr.size(0))
+        with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+            sr = model(lr)
+        # PSNR in fp32: fp16 rounding is visible in the third decimal
+        meter.update(psnr(sr.float(), hr), n=lr.size(0))
     return meter.avg
 
 
@@ -82,6 +94,16 @@ def train(cfg, fresh=False):
     criterion = nn.L1Loss() if cfg["train"]["loss"] == "l1" else nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg["train"]["lr"])
 
+    # the flag lives in the shared config but only the Swin models honour it
+    uses_checkpoint = any(getattr(m, "use_checkpoint", False) for m in model.modules())
+    amp = amp_enabled(cfg, device)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
+    # Accumulate N micro-batches before stepping: the optimiser still sees
+    # batch_size*grad_accum samples per step, so a GPU that can only hold a
+    # small batch trains under the SAME effective batch as a larger one. That
+    # matters here because the baselines are compared under matched conditions.
+    accum = max(1, int(cfg["train"].get("grad_accum", 1)))
+
     extra = {"model_name": cfg["model"]["name"], "config": cfg}
 
     # resume from last.pth if present (unless --fresh). This is what makes a
@@ -95,6 +117,8 @@ def train(cfg, fresh=False):
         start_epoch = ckpt["epoch"] + 1
         best_psnr = ckpt.get("best_metric", -1.0)
         restore_rng_state(ckpt.get("rng_state"))
+        if amp and ckpt.get("scaler_state"):
+            scaler.load_state_dict(ckpt["scaler_state"])
         resumed = True
 
     banner = [
@@ -102,7 +126,10 @@ def train(cfg, fresh=False):
         f"device     : {device}",
         f"data       : {len(train_loader.dataset)} train / "
         f"{len(val_loader.dataset)} val patches, batch {cfg['train']['batch_size']}"
-        f" -> {len(train_loader)} batches/epoch",
+        + (f" x{accum} accum (effective {cfg['train']['batch_size']*accum})" if accum > 1 else "")
+        + f" -> {len(train_loader)} batches/epoch",
+        f"precision  : {'mixed (fp16)' if amp else 'fp32'}"
+        + ("   grad-checkpointing on" if uses_checkpoint else ""),
         f"out_dir    : {out_dir}",
     ]
     if resumed:
@@ -130,25 +157,32 @@ def train(cfg, fresh=False):
         rep.start_epoch(epoch, n_batches)
         model.train()
         loss_meter = AverageMeter()
+        optimizer.zero_grad(set_to_none=True)
         for i, (lr, hr, _, _) in enumerate(train_loader, start=1):
             lr, hr = lr.to(device), hr.to(device)
-            optimizer.zero_grad()
-            sr = model(lr)
-            loss = criterion(sr, hr)
-            loss.backward()
-            optimizer.step()
+            with torch.autocast("cuda", dtype=torch.float16, enabled=amp):
+                sr = model(lr)
+                loss = criterion(sr, hr)
+            # scale down so the accumulated gradient is the mean over the
+            # whole effective batch, not its sum
+            scaler.scale(loss / accum).backward()
+            if i % accum == 0 or i == n_batches:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
             loss_meter.update(loss.item(), n=lr.size(0))
             rep.batch(i, loss_meter.avg)
 
         val_psnr, is_best = None, False
         if epoch % cfg["train"]["val_every"] == 0:
-            val_psnr = validate(model, val_loader, device)
+            val_psnr = validate(model, val_loader, device, amp=amp)
             if val_psnr > best_psnr:                       # best.pth: only on improvement
                 best_psnr = val_psnr
                 is_best = True
                 save_checkpoint(out_dir / "best.pth", model, optimizer, epoch, best_psnr, extra=extra)
         # last.pth: EVERY epoch, so training can resume exactly where it stopped
-        save_checkpoint(last_path, model, optimizer, epoch, best_psnr, extra=extra)
+        save_checkpoint(last_path, model, optimizer, epoch, best_psnr,
+                        extra={**extra, "scaler_state": scaler.state_dict()})
         rep.end_epoch(epoch, loss_meter.avg, val_psnr=val_psnr,
                       best_psnr=best_psnr, is_best=is_best)
 
